@@ -60,6 +60,13 @@ DOCS_ENABLED = os.environ.get("COPAW_OPENAPI_DOCS", "false").lower() in (
 ACTIVE_SKILLS_DIR = WORKING_DIR / "active_skills"
 # Customized skills directory (user-created skills)
 CUSTOMIZED_SKILLS_DIR = WORKING_DIR / "customized_skills"
+# Shared skills directory from LCAgent (optional, set via COPAW_SHARED_SKILLS_DIR env)
+SHARED_SKILLS_DIR = (
+    Path(os.environ.get("COPAW_SHARED_SKILLS_DIR", ""))
+    .resolve()
+    if os.environ.get("COPAW_SHARED_SKILLS_DIR")
+    else None
+)
 
 # Memory directory
 MEMORY_DIR = WORKING_DIR / "memory"
