@@ -182,11 +182,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       >
         {!collapsed && (
           <>
-            <img
-              src="/logo.png"
-              alt="CoPaw"
-              style={{ height: 32, width: "auto" }}
-            />
+            {/* Logo removed */}
             {version && (
               <span
                 style={{
