@@ -62,6 +62,16 @@ def get_active_skills_dir() -> Path:
     return ACTIVE_SKILLS_DIR
 
 
+def get_shared_skills_dir() -> Path | None:
+    """Get the path to shared skills directory from LCAgent.
+    
+    Returns:
+        Path to shared skills directory if COPAW_SHARED_SKILLS_DIR is set, None otherwise.
+    """
+    from ..constant import SHARED_SKILLS_DIR
+    return SHARED_SKILLS_DIR
+
+
 def get_working_skills_dir() -> Path:
     """
     Get the path to skills directory in working_dir.
@@ -501,6 +511,13 @@ class SkillService:
         skills.extend(
             _read_skills_from_dir(get_customized_skills_dir(), "customized"),
         )
+        
+        # Collect from shared skills directory (from LCAgent) if available
+        shared_skills_dir = get_shared_skills_dir()
+        if shared_skills_dir:
+            skills.extend(
+                _read_skills_from_dir(shared_skills_dir, "shared"),
+            )
 
         return skills
 
@@ -508,11 +525,26 @@ class SkillService:
     def list_available_skills() -> list[SkillInfo]:
         """
         List all available (active) skills in active_skills directory.
+        Also includes shared skills from LCAgent if available.
 
         Returns:
             List of SkillInfo with name, content, source, and path.
         """
-        return _read_skills_from_dir(get_active_skills_dir(), "active")
+        skills: list[SkillInfo] = []
+        
+        # Collect from active skills directory
+        skills.extend(
+            _read_skills_from_dir(get_active_skills_dir(), "active"),
+        )
+        
+        # Collect from shared skills directory (from LCAgent) if available
+        shared_skills_dir = get_shared_skills_dir()
+        if shared_skills_dir:
+            skills.extend(
+                _read_skills_from_dir(shared_skills_dir, "shared"),
+            )
+        
+        return skills
 
     @staticmethod
     def create_skill(
