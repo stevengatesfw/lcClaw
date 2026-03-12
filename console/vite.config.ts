@@ -10,7 +10,6 @@ export default defineConfig(({ mode }) => {
   return {
     define: {
       BASE_URL: JSON.stringify(apiBaseUrl),
-      TOKEN: JSON.stringify(env.TOKEN || ""),
       MOBILE: false,
     },
     plugins: [react()],

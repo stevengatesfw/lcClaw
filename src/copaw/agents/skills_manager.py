@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Skills management: sync skills from code to working_dir."""
 import filecmp
+import json
 import logging
 import shutil
 from pathlib import Path
@@ -8,7 +9,15 @@ from typing import Any
 from pydantic import BaseModel
 import frontmatter
 
-from ..constant import ACTIVE_SKILLS_DIR, CUSTOMIZED_SKILLS_DIR
+from ..config.utils import (
+    DEFAULT_USER_ID,
+    get_active_skills_dir_for_user,
+    get_customized_skills_dir_for_user,
+)
+from ..constant import (
+    PLATFORM_SKILLS_CONFIG_PATH,
+    USERS_DIR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +61,14 @@ def get_builtin_skills_dir() -> Path:
     return Path(__file__).parent / "skills"
 
 
-def get_customized_skills_dir() -> Path:
-    """Get the path to customized skills directory in working_dir."""
-    return CUSTOMIZED_SKILLS_DIR
+def get_customized_skills_dir(user_id: str | None = None) -> Path:
+    """Get the path to customized skills directory for a user (per-user)."""
+    return get_customized_skills_dir_for_user(user_id or DEFAULT_USER_ID)
 
 
-def get_active_skills_dir() -> Path:
-    """Get the path to active skills directory in working_dir."""
-    return ACTIVE_SKILLS_DIR
+def get_active_skills_dir(user_id: str | None = None) -> Path:
+    """Get the path to active skills directory for a user (per-user)."""
+    return get_active_skills_dir_for_user(user_id or DEFAULT_USER_ID)
 
 
 def get_shared_skills_dir() -> Path | None:
@@ -72,13 +81,79 @@ def get_shared_skills_dir() -> Path | None:
     return SHARED_SKILLS_DIR
 
 
+def _load_platform_disabled_skill_names() -> set[str]:
+    """Load set of platform (shared) skill names that are disabled.
+    
+    Reads from COPAW_PLATFORM_SKILLS_CONFIG_PATH when set (same file LCAgent writes).
+    When not set, returns empty set (all shared skills visible).
+    """
+    path = PLATFORM_SKILLS_CONFIG_PATH
+    if not path or not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        disabled = data.get("disabled")
+        if isinstance(disabled, list):
+            return set(str(x) for x in disabled if isinstance(x, str))
+    except Exception as e:
+        logger.debug("Failed to read platform skills config: %s", e)
+    return set()
+
+
+def _user_enabled_skills_path(user_id: str) -> Path:
+    """Path to user's enabled_skills.json (per-user when LAZY_PLATFORM_KEY is set)."""
+    return USERS_DIR / user_id / "enabled_skills.json"
+
+
+def get_user_enabled_skills(user_id: str) -> set[str]:
+    """Load set of enabled skill names for a user. Returns empty set if file missing."""
+    path = _user_enabled_skills_path(user_id)
+    if not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        enabled = data.get("enabled") if isinstance(data, dict) else data
+        if isinstance(enabled, list):
+            return set(str(x) for x in enabled if isinstance(x, str))
+    except Exception as e:
+        logger.debug("Failed to read user enabled skills for %s: %s", user_id, e)
+    return set()
+
+
+def set_user_enabled_skills(user_id: str, names: set[str]) -> None:
+    """Persist user's enabled skill names."""
+    path = _user_enabled_skills_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"enabled": sorted(names)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def add_user_enabled_skill(user_id: str, name: str) -> None:
+    """Add one skill to user's enabled set and persist."""
+    names = get_user_enabled_skills(user_id)
+    names.add(name)
+    set_user_enabled_skills(user_id, names)
+
+
+def remove_user_enabled_skill(user_id: str, name: str) -> None:
+    """Remove one skill from user's enabled set and persist."""
+    names = get_user_enabled_skills(user_id)
+    names.discard(name)
+    set_user_enabled_skills(user_id, names)
+
+
 def get_working_skills_dir() -> Path:
     """
-    Get the path to skills directory in working_dir.
+    Get the path to active skills directory for current request.
 
-    Deprecated: Use get_active_skills_dir() instead.
+    Uses context (set in query_handler) when available, otherwise users/default/active_skills.
+    Used by agent for skill registration.
     """
-    return get_active_skills_dir()
+    from ..context import get_current_working_dir
+
+    return get_current_working_dir() / "active_skills"
 
 
 def _build_directory_tree(directory: Path) -> dict[str, Any]:
@@ -139,25 +214,28 @@ def _collect_skills_from_dir(directory: Path) -> dict[str, Path]:
 def sync_skills_to_working_dir(
     skill_names: list[str] | None = None,
     force: bool = False,
+    user_id: str | None = None,
 ) -> tuple[int, int]:
     """
-    Sync skills from builtin and customized to active_skills directory.
+    Sync skills from builtin, customized, and shared (platform) to active_skills directory.
 
     Args:
         skill_names: List of skill names to sync. If None, sync all skills.
         force: If True, overwrite existing skills in active_skills.
+        user_id: User ID for per-user customized/active dirs. Uses default if None.
 
     Returns:
         Tuple of (synced_count, skipped_count).
     """
+    uid = user_id or DEFAULT_USER_ID
     builtin_skills = get_builtin_skills_dir()
-    customized_skills = get_customized_skills_dir()
-    active_skills = get_active_skills_dir()
+    customized_skills = get_customized_skills_dir(uid)
+    active_skills = get_active_skills_dir(uid)
 
     # Ensure active skills directory exists
     active_skills.mkdir(parents=True, exist_ok=True)
 
-    # Collect skills from both sources (customized overwrites builtin)
+    # Collect skills from all sources (customized overwrites builtin, shared overwrites both)
     skills_to_sync = _collect_skills_from_dir(builtin_skills)
     if not skills_to_sync and not builtin_skills.exists():
         logger.warning(
@@ -167,6 +245,16 @@ def sync_skills_to_working_dir(
 
     # Customized skills override builtin with same name
     skills_to_sync.update(_collect_skills_from_dir(customized_skills))
+
+    # Shared (platform) skills: enable from LCAgent platform library; override same name
+    # Only include platform-enabled shared skills (filter by platform config when set)
+    shared_skills_dir = get_shared_skills_dir()
+    if shared_skills_dir:
+        platform_disabled = _load_platform_disabled_skill_names()
+        shared = _collect_skills_from_dir(shared_skills_dir)
+        for name, path in shared.items():
+            if name not in platform_disabled:
+                skills_to_sync[name] = path
 
     # Filter by skill_names if specified
     if skill_names is not None:
@@ -260,18 +348,21 @@ def _compare_dircmp(dcmp: "filecmp.dircmp") -> bool:
 
 def sync_skills_from_active_to_customized(
     skill_names: list[str] | None = None,
+    user_id: str | None = None,
 ) -> tuple[int, int]:
     """
     Sync skills from active_skills to customized_skills directory.
 
     Args:
         skill_names: List of skill names to sync. If None, sync all skills.
+        user_id: User ID for per-user dirs. Uses default if None.
 
     Returns:
         Tuple of (synced_count, skipped_count).
     """
-    active_skills = get_active_skills_dir()
-    customized_skills = get_customized_skills_dir()
+    uid = user_id or DEFAULT_USER_ID
+    active_skills = get_active_skills_dir(uid)
+    customized_skills = get_customized_skills_dir(uid)
     builtin_skills = get_builtin_skills_dir()
 
     customized_skills.mkdir(parents=True, exist_ok=True)
@@ -282,6 +373,15 @@ def sync_skills_from_active_to_customized(
         return 0, 0
 
     builtin_skills_dict = _collect_skills_from_dir(builtin_skills)
+
+    # 来自 shared（且平台已启用）的技能不复制到 customized，避免列表里出现重复（shared + customized）
+    shared_skills_dir = get_shared_skills_dir()
+    platform_disabled = _load_platform_disabled_skill_names()
+    shared_skills_dict = (
+        _collect_skills_from_dir(shared_skills_dir)
+        if shared_skills_dir and shared_skills_dir.exists()
+        else {}
+    )
 
     synced_count = 0
     skipped_count = 0
@@ -295,6 +395,10 @@ def sync_skills_from_active_to_customized(
             if _is_directory_same(skill_dir, builtin_skill_dir):
                 skipped_count += 1
                 continue
+
+        if skill_name in shared_skills_dict and skill_name not in platform_disabled:
+            skipped_count += 1
+            continue
 
         target_dir = customized_skills / skill_name
 
@@ -318,14 +422,14 @@ def sync_skills_from_active_to_customized(
     return synced_count, skipped_count
 
 
-def list_available_skills() -> list[str]:
+def list_available_skills(user_id: str | None = None) -> list[str]:
     """
     List all available skills in active_skills directory.
 
     Returns:
         List of skill names.
     """
-    active_skills = get_active_skills_dir()
+    active_skills = get_active_skills_dir(user_id) if user_id else get_working_skills_dir()
 
     if not active_skills.exists():
         return []
@@ -337,23 +441,33 @@ def list_available_skills() -> list[str]:
     ]
 
 
-def ensure_skills_initialized() -> None:
+def ensure_skills_initialized(user_id: str | None = None) -> None:
     """
     Check if skills are initialized in active_skills directory.
+    Syncs from builtin+customized+shared if directory is empty (per-user).
 
     Logs a warning if no skills are found, or info about loaded skills.
-    Skills should be configured via `copaw init` or
-    `copaw skills config`.
     """
-    active_skills = get_active_skills_dir()
-    available = list_available_skills()
+    active_dir = get_active_skills_dir(user_id) if user_id else get_working_skills_dir()
+    available = list_available_skills(user_id)
 
-    if not active_skills.exists() or not available:
-        logger.warning(
-            "No skills found in active_skills directory. "
-            "Run 'copaw init' or 'copaw skills config' "
-            "to configure skills.",
-        )
+    if not active_dir.exists() or not available:
+        from ..context import get_current_working_dir
+
+        uid = user_id or get_current_working_dir().name or DEFAULT_USER_ID
+        try:
+            synced, _ = sync_skills_to_working_dir(user_id=uid)
+            if synced > 0:
+                logger.info("Initialized %d skill(s) for user %s", synced, uid)
+                available = list_available_skills(user_id)
+        except Exception as e:
+            logger.debug("Sync skills for init failed: %s", e)
+        if not available:
+            logger.warning(
+                "No skills found in active_skills directory. "
+                "Run 'copaw init' or 'copaw skills config' "
+                "to configure skills.",
+            )
     else:
         logger.debug(
             "Loaded %d skill(s) from active_skills: %s",
@@ -480,15 +594,19 @@ class SkillService:
     """
 
     @staticmethod
-    def list_all_skills() -> list[SkillInfo]:
+    def list_all_skills(user_id: str | None = None) -> list[SkillInfo]:
         """
         List all skills from builtin and customized directories.
+
+        Args:
+            user_id: User ID for per-user customized dir. Uses default if None.
 
         Returns:
             List of SkillInfo with name, content, source, and path.
         """
+        uid = user_id or DEFAULT_USER_ID
         try:
-            synced, _ = sync_skills_from_active_to_customized()
+            synced, _ = sync_skills_from_active_to_customized(user_id=uid)
             if synced > 0:
                 logger.debug(
                     "Synced %d skill(s) from active_skills to "
@@ -509,40 +627,46 @@ class SkillService:
             _read_skills_from_dir(get_builtin_skills_dir(), "builtin"),
         )
         skills.extend(
-            _read_skills_from_dir(get_customized_skills_dir(), "customized"),
+            _read_skills_from_dir(get_customized_skills_dir(uid), "customized"),
         )
         
         # Collect from shared skills directory (from LCAgent) if available
+        # Only expose platform-enabled shared skills when COPAW_PLATFORM_SKILLS_CONFIG_PATH is set
         shared_skills_dir = get_shared_skills_dir()
         if shared_skills_dir:
-            skills.extend(
-                _read_skills_from_dir(shared_skills_dir, "shared"),
-            )
+            platform_disabled = _load_platform_disabled_skill_names()
+            shared_list = _read_skills_from_dir(shared_skills_dir, "shared")
+            skills.extend(s for s in shared_list if s.name not in platform_disabled)
 
         return skills
 
     @staticmethod
-    def list_available_skills() -> list[SkillInfo]:
+    def list_available_skills(user_id: str | None = None) -> list[SkillInfo]:
         """
         List all available (active) skills in active_skills directory.
         Also includes shared skills from LCAgent if available.
+
+        Args:
+            user_id: User ID for per-user active dir. Uses context when None.
 
         Returns:
             List of SkillInfo with name, content, source, and path.
         """
         skills: list[SkillInfo] = []
-        
+        active_dir = get_active_skills_dir(user_id) if user_id else get_working_skills_dir()
+
         # Collect from active skills directory
         skills.extend(
-            _read_skills_from_dir(get_active_skills_dir(), "active"),
+            _read_skills_from_dir(active_dir, "active"),
         )
         
         # Collect from shared skills directory (from LCAgent) if available
+        # Only expose platform-enabled shared skills when COPAW_PLATFORM_SKILLS_CONFIG_PATH is set
         shared_skills_dir = get_shared_skills_dir()
         if shared_skills_dir:
-            skills.extend(
-                _read_skills_from_dir(shared_skills_dir, "shared"),
-            )
+            platform_disabled = _load_platform_disabled_skill_names()
+            shared_list = _read_skills_from_dir(shared_skills_dir, "shared")
+            skills.extend(s for s in shared_list if s.name not in platform_disabled)
         
         return skills
 
@@ -554,6 +678,7 @@ class SkillService:
         references: dict[str, Any] | None = None,
         scripts: dict[str, Any] | None = None,
         extra_files: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> bool:
         """
         Create a new skill in customized_skills directory.
@@ -624,7 +749,8 @@ class SkillService:
             )
             return False
 
-        customized_dir = get_customized_skills_dir()
+        uid = user_id or DEFAULT_USER_ID
+        customized_dir = get_customized_skills_dir(uid)
         customized_dir.mkdir(parents=True, exist_ok=True)
 
         skill_dir = customized_dir / name
@@ -687,17 +813,19 @@ class SkillService:
             return False
 
     @staticmethod
-    def disable_skill(name: str) -> bool:
+    def disable_skill(name: str, user_id: str | None = None) -> bool:
         """
         Disable a skill by removing it from active_skills directory.
 
         Args:
             name: Skill name to disable.
+            user_id: User ID for per-user active dir. Uses default if None.
 
         Returns:
             True if skill was disabled successfully, False otherwise.
         """
-        active_dir = get_active_skills_dir()
+        uid = user_id or DEFAULT_USER_ID
+        active_dir = get_active_skills_dir(uid)
         skill_dir = active_dir / name
 
         if not skill_dir.exists():
@@ -720,24 +848,26 @@ class SkillService:
             return False
 
     @staticmethod
-    def enable_skill(name: str, force: bool = False) -> bool:
+    def enable_skill(name: str, force: bool = False, user_id: str | None = None) -> bool:
         """
         Enable a skill by syncing it to active_skills directory.
 
         Args:
             name: Skill name to enable.
             force: If True, overwrite existing skill in active_skills.
+            user_id: User ID for per-user dirs. Uses default if None.
 
         Returns:
             True if skill was enabled successfully, False otherwise.
         """
-        sync_skills_to_working_dir(skill_names=[name], force=force)
+        uid = user_id or DEFAULT_USER_ID
+        sync_skills_to_working_dir(skill_names=[name], force=force, user_id=uid)
         # Check if skill was actually synced
-        active_dir = get_active_skills_dir()
+        active_dir = get_active_skills_dir(uid)
         return (active_dir / name).exists()
 
     @staticmethod
-    def delete_skill(name: str) -> bool:
+    def delete_skill(name: str, user_id: str | None = None) -> bool:
         """
         Delete a skill from customized_skills directory permanently.
 
@@ -748,11 +878,13 @@ class SkillService:
 
         Args:
             name: Skill name to delete.
+            user_id: User ID for per-user customized dir. Uses default if None.
 
         Returns:
             True if skill was deleted successfully, False otherwise.
         """
-        customized_dir = get_customized_skills_dir()
+        uid = user_id or DEFAULT_USER_ID
+        customized_dir = get_customized_skills_dir(uid)
         skill_dir = customized_dir / name
 
         if not skill_dir.exists():
@@ -780,18 +912,21 @@ class SkillService:
     @staticmethod
     def sync_from_active_to_customized(
         skill_names: list[str] | None = None,
+        user_id: str | None = None,
     ) -> tuple[int, int]:
         """
         Sync skills from active_skills to customized_skills directory.
 
         Args:
             skill_names: List of skill names to sync. If None, sync all skills.
+            user_id: User ID for per-user dirs. Uses default if None.
 
         Returns:
             Tuple of (synced_count, skipped_count).
         """
         return sync_skills_from_active_to_customized(
             skill_names=skill_names,
+            user_id=user_id,
         )
 
     @staticmethod
@@ -799,6 +934,7 @@ class SkillService:
         skill_name: str,
         file_path: str,
         source: str,
+        user_id: str | None = None,
     ) -> str | None:
         """
         Load a specific file from a skill's references or scripts directory.
@@ -860,8 +996,9 @@ class SkillService:
             return None
 
         # Get source directory
+        uid = user_id or DEFAULT_USER_ID
         if source == "customized":
-            base_dir = get_customized_skills_dir()
+            base_dir = get_customized_skills_dir(uid)
         else:  # builtin
             base_dir = get_builtin_skills_dir()
 

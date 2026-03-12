@@ -2,13 +2,15 @@
 """Chat management API."""
 from __future__ import annotations
 import json
+import os
 
-from typing import Optional
+from typing import Callable, Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from agentscope.session import JSONSession
 from agentscope.memory import InMemoryMemory
 
+from ...app.auth import get_current_user_id_required
 from .manager import ChatManager
 from .models import (
     ChatSpec,
@@ -19,26 +21,27 @@ from .utils import agentscope_msg_to_message
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
+_ISOLATION_ENABLED = bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
-def get_chat_manager(request: Request) -> ChatManager:
-    """Get the chat manager from app state.
 
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        ChatManager instance
-
-    Raises:
-        HTTPException: If manager is not initialized
-    """
-    mgr = getattr(request.app.state, "chat_manager", None)
-    if mgr is None:
+def _get_chat_manager_factory(request: Request) -> Callable[[str], ChatManager]:
+    """Get chat manager factory from app state."""
+    factory = getattr(request.app.state, "chat_manager_factory", None)
+    if factory is None:
         raise HTTPException(
             status_code=503,
             detail="Chat manager not initialized",
         )
-    return mgr
+    return factory
+
+
+def get_chat_manager_for_request(
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id_required),
+) -> ChatManager:
+    """Get ChatManager for current user (when isolation enabled)."""
+    factory = _get_chat_manager_factory(request)
+    return factory(current_user_id)
 
 
 def get_session(request: Request) -> JSONSession:
@@ -64,42 +67,48 @@ def get_session(request: Request) -> JSONSession:
 
 @router.get("", response_model=list[ChatSpec])
 async def list_chats(
-    user_id: Optional[str] = Query(None, description="Filter by user ID"),
     channel: Optional[str] = Query(None, description="Filter by channel"),
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
+    current_user_id: str = Depends(get_current_user_id_required),
 ):
-    """List all chats with optional filters.
+    """List all chats for current user (user_id from JWT when isolation enabled).
 
     Args:
-        user_id: Optional user ID to filter chats
         channel: Optional channel name to filter chats
-        mgr: Chat manager dependency
+        mgr: Chat manager dependency (per-user when isolation enabled)
+        current_user_id: From JWT; empty when isolation disabled
     """
-    return await mgr.list_chats(user_id=user_id, channel=channel)
+    user_filter = current_user_id if _ISOLATION_ENABLED else None
+    return await mgr.list_chats(user_id=user_filter, channel=channel)
 
 
 @router.post("", response_model=ChatSpec)
 async def create_chat(
     request: ChatSpec,
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
+    current_user_id: str = Depends(get_current_user_id_required),
 ):
     """Create a new chat.
 
     Server generates chat_id (UUID) automatically.
+    When isolation enabled, user_id is forced from JWT.
 
     Args:
         request: Chat creation request
         mgr: Chat manager dependency
-
-    Returns:
-        Created chat spec with UUID
+        current_user_id: From JWT; used as user_id when isolation enabled
     """
     chat_id = str(uuid4())
+    user_id = (
+        current_user_id
+        if _ISOLATION_ENABLED
+        else (request.user_id or "anonymous")
+    )
     spec = ChatSpec(
         id=chat_id,
         name=request.name,
         session_id=request.session_id,
-        user_id=request.user_id,
+        user_id=user_id,
         channel=request.channel,
         meta=request.meta,
     )
@@ -109,7 +118,7 @@ async def create_chat(
 @router.post("/batch-delete", response_model=dict)
 async def batch_delete_chats(
     chat_ids: list[str],
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
 ):
     """Delete chats by chat IDs.
 
@@ -127,7 +136,7 @@ async def batch_delete_chats(
 @router.get("/{chat_id}", response_model=ChatHistory)
 async def get_chat(
     chat_id: str,
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
     session: JSONSession = Depends(get_session),
 ):
     """Get detailed information about a specific chat by UUID.
@@ -174,7 +183,7 @@ async def get_chat(
 async def update_chat(
     chat_id: str,
     spec: ChatSpec,
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
 ):
     """Update an existing chat.
 
@@ -210,7 +219,7 @@ async def update_chat(
 @router.delete("/{chat_id}", response_model=dict)
 async def delete_chat(
     chat_id: str,
-    mgr: ChatManager = Depends(get_chat_manager),
+    mgr: ChatManager = Depends(get_chat_manager_for_request),
 ):
     """Delete a chat by UUID.
 

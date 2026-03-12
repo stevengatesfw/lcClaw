@@ -67,9 +67,19 @@ SHARED_SKILLS_DIR = (
     if os.environ.get("COPAW_SHARED_SKILLS_DIR")
     else None
 )
+# Optional path to LCAgent platform_skills_config.json (same file LCAgent writes).
+# When set, only shared skills not in config's "disabled" list are exposed (platform-enabled only).
+PLATFORM_SKILLS_CONFIG_PATH = (
+    Path(os.environ.get("COPAW_PLATFORM_SKILLS_CONFIG_PATH", ""))
+    .resolve()
+    if os.environ.get("COPAW_PLATFORM_SKILLS_CONFIG_PATH")
+    else None
+)
 
 # Memory directory
 MEMORY_DIR = WORKING_DIR / "memory"
+# Per-user data when LAZY_PLATFORM_KEY is set (e.g. users/{user_id}/enabled_skills.json)
+USERS_DIR = WORKING_DIR / "users"
 
 # Custom channel modules (installed via `copaw channels install`); manager
 # loads BaseChannel subclasses from here.

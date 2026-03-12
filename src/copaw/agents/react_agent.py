@@ -40,6 +40,7 @@ from .tools import (
 from .utils import process_file_and_media_blocks_in_message
 from ..agents.memory import MemoryManager
 from ..config import load_config
+from ..context import get_current_working_dir
 from ..constant import (
     MEMORY_COMPACT_KEEP_RECENT,
     MEMORY_COMPACT_RATIO,
@@ -295,7 +296,7 @@ class CoPawAgent(ReActAgent):
         # Bootstrap hook - checks BOOTSTRAP.md on first interaction
         config = load_config()
         bootstrap_hook = BootstrapHook(
-            working_dir=WORKING_DIR,
+            working_dir=get_current_working_dir(),
             language=config.agents.language,
         )
         self.register_instance_hook(

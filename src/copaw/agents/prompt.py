@@ -155,9 +155,9 @@ def build_system_prompt_from_working_dir() -> str:
         If working_dir contains AGENTS.md, SOUL.md and PROFILE.md, they will be combined:
         "# AGENTS.md\\n\\n...\\n\\n# SOUL.md\\n\\n...\\n\\n# PROFILE.md\\n\\n..."
     """
-    from ..constant import WORKING_DIR
+    from ..context import get_current_working_dir
 
-    builder = PromptBuilder(working_dir=Path(WORKING_DIR))
+    builder = PromptBuilder(working_dir=get_current_working_dir())
     return builder.build()
 
 

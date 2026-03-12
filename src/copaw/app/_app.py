@@ -5,6 +5,7 @@ import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,11 @@ from ..config import (  # pylint: disable=no-name-in-module
     update_last_dispatch,
     ConfigWatcher,
 )
-from ..config.utils import get_jobs_path, get_chats_path, get_config_path
+from ..config.utils import (
+    get_jobs_path,
+    get_chats_path_for_user,
+    get_config_path,
+)
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV, CORS_ORIGINS, WORKING_DIR
 from ..__version__ import __version__
 from ..utils.logging import setup_logger, add_copaw_file_handler
@@ -32,6 +37,7 @@ from .runner.manager import ChatManager
 from .routers import router as api_router
 from .routers.voice import voice_router
 from ..envs import load_envs_into_environ
+from .auth import AgentProcessUserInjectMiddleware, UserIdContextMiddleware
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -94,12 +100,21 @@ async def lifespan(
     await cron_manager.start()
 
     # --- chat manager init and connect to runner.session ---
-    chat_repo = JsonChatRepository(get_chats_path())
-    chat_manager = ChatManager(
-        repo=chat_repo,
-    )
+    # Per-user ChatManager (always uses users/<user_id>/chats.json).
+    _chat_manager_cache: dict = {}
 
-    runner.set_chat_manager(chat_manager)
+    def _get_chat_manager_for_user(user_id: Optional[str]) -> ChatManager:
+        """Return ChatManager for user. Always uses per-user repo."""
+        cache_key = user_id or "default"
+        if cache_key not in _chat_manager_cache:
+            path = get_chats_path_for_user(user_id)
+            _chat_manager_cache[cache_key] = ChatManager(
+                repo=JsonChatRepository(path),
+            )
+        return _chat_manager_cache[cache_key]
+
+    # Runner uses factory so agent/process can get per-user manager
+    runner.set_chat_manager(_get_chat_manager_for_user)
 
     # --- config file watcher (channels + heartbeat hot-reload on change) ---
     config_watcher = ConfigWatcher(
@@ -126,7 +141,7 @@ async def lifespan(
     app.state.runner = runner
     app.state.channel_manager = channel_manager
     app.state.cron_manager = cron_manager
-    app.state.chat_manager = chat_manager
+    app.state.chat_manager_factory = _get_chat_manager_for_user
     app.state.config_watcher = config_watcher
     app.state.mcp_manager = mcp_manager
     app.state.mcp_watcher = mcp_watcher
@@ -431,6 +446,11 @@ app = FastAPI(
     openapi_url="/openapi.json" if DOCS_ENABLED else None,
 )
 
+# Agent process: inject user_id from JWT when LAZY_PLATFORM_KEY is set
+app.add_middleware(AgentProcessUserInjectMiddleware)
+# Set user_id in context from JWT for all requests (runner uses when request.user_id empty)
+app.add_middleware(UserIdContextMiddleware)
+
 # Apply CORS middleware if CORS_ORIGINS is set
 if CORS_ORIGINS:
     origins = [o.strip() for o in CORS_ORIGINS.split(",") if o.strip()]
@@ -448,16 +468,30 @@ _CONSOLE_STATIC_ENV = "COPAW_CONSOLE_STATIC_DIR"
 
 
 def _resolve_console_static_dir() -> str:
-    if os.environ.get(_CONSOLE_STATIC_ENV):
-        return os.environ[_CONSOLE_STATIC_ENV]
-    # Shipped dist lives in copaw package as static data (not a Python pkg).
-    pkg_dir = Path(__file__).resolve().parent.parent
-    candidate = pkg_dir / "console"
-    if candidate.is_dir() and (candidate / "index.html").exists():
-        return str(candidate)
-    # the following code can be removed after next release,
-    # because the console will be output to copaw's
-    # `src/copaw/console/` directory directly by vite.
+    env_dir = os.environ.get(_CONSOLE_STATIC_ENV)
+    if env_dir:
+        candidate = Path(env_dir)
+        if (candidate / "index.html").exists():
+            return env_dir
+        # lcClaw 控制台未构建时回退到默认 copaw 控制台
+        logger.warning(
+            "COPAW_CONSOLE_STATIC_DIR=%s 无 index.html，回退到默认控制台", env_dir
+        )
+    # 默认：copaw 包内 console（优先 venv 安装的包，含完整 console）
+    candidates = []
+    try:
+        import copaw
+
+        candidates.append(Path(copaw.__file__).resolve().parent / "console")
+    except ImportError:
+        pass
+    candidates.append(Path(__file__).resolve().parent.parent / "console")
+    # venv 中安装的 copaw 包（PYTHONPATH 优先时源码可能无 console）
+    for site in __import__("site").getsitepackages():
+        candidates.append(Path(site) / "copaw" / "console")
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "index.html").exists():
+            return str(candidate)
     cwd = Path(os.getcwd())
     for subdir in ("console/dist", "console_dist"):
         candidate = cwd / subdir
