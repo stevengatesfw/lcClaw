@@ -5,7 +5,7 @@ const defaultConfig = {
     prefix: "copaw",
     leftHeader: {
       logo: "",
-      title: "Work with CoPaw",
+      title: "Ask lcClaw Anything",
     },
   },
   sender: {

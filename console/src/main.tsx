@@ -1,7 +1,7 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./i18n";
-import { setToken } from "./api/tokenStore";
+import { setToken, syncTokenFromLCAgentLocalStorage } from "./api/tokenStore";
 import { AuthGuard } from "./components/AuthGuard";
 
 /** LCAgent auth message type - parent sends token when embedding lcClaw */
@@ -11,6 +11,9 @@ if (typeof window !== "undefined") {
   // Fallback: token injected by LCAgent proxy (window.__COPAW_TOKEN)
   const injected = (window as unknown as { __COPAW_TOKEN?: string }).__COPAW_TOKEN;
   if (injected) setToken(injected);
+
+  // 与 LCAgent 同域 iframe：父页 lcClaw 会 postMessage；若晚于首屏或丢失，同源 localStorage 仍有 console_token
+  syncTokenFromLCAgentLocalStorage();
 
   window.addEventListener("message", (event) => {
     if (event.data?.type === LCAGENT_AUTH_MESSAGE_TYPE && event.data?.token) {

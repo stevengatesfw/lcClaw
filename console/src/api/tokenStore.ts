@@ -50,3 +50,22 @@ export function isInLCAgentIframe(): boolean {
     return false;
   }
 }
+
+
+/** LCAgent 控制台与 iframe 内 CoPaw 同域时写入的 key，与 lcagent-k8s front 一致 */
+const LCAGENT_CONSOLE_TOKEN_KEY = "console_token";
+
+/**
+ * 与 LCAgent 同域嵌入时，父页会在 iframe load 后 postMessage 传 token；
+ * 若存在竞态或未及时发送，可直接读同源 localStorage（与父页共用）。
+ * 应在应用启动时尽早调用（在 AuthGuard 等待 token 之前）。
+ */
+export function syncTokenFromLCAgentLocalStorage(): void {
+  if (typeof window === "undefined" || !isInLCAgentIframe()) return;
+  try {
+    const t = window.localStorage?.getItem(LCAGENT_CONSOLE_TOKEN_KEY) || "";
+    if (t) setToken(t);
+  } catch {
+    // localStorage 不可用时忽略
+  }
+}
