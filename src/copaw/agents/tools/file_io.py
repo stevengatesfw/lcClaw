@@ -8,12 +8,12 @@ from typing import Optional
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
-from ...constant import WORKING_DIR
+from ...context import get_current_working_dir
 
 
 def _resolve_file_path(file_path: str) -> str:
     """Resolve file path: use absolute path as-is,
-    resolve relative path from WORKING_DIR.
+    resolve relative path from current working dir (per-user when isolation enabled).
 
     Args:
         file_path: The input file path (absolute or relative).
@@ -24,8 +24,7 @@ def _resolve_file_path(file_path: str) -> str:
     path = Path(file_path)
     if path.is_absolute():
         return str(path)
-    else:
-        return str(WORKING_DIR / file_path)
+    return str(get_current_working_dir() / file_path)
 
 
 async def read_file(  # pylint: disable=too-many-return-statements

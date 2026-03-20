@@ -1092,6 +1092,7 @@ def install_skill_from_hub(
     version: str = "",
     enable: bool = True,
     overwrite: bool = False,
+    user_id: str | None = None,
 ) -> HubInstallResult:
     source_url = bundle_url
     data: Any
@@ -1142,6 +1143,7 @@ def install_skill_from_hub(
         references=references,
         scripts=scripts,
         extra_files=extra_files,
+        user_id=user_id,
     )
     if not created:
         raise RuntimeError(
@@ -1151,7 +1153,7 @@ def install_skill_from_hub(
 
     enabled = False
     if enable:
-        enabled = SkillService.enable_skill(name, force=True)
+        enabled = SkillService.enable_skill(name, force=True, user_id=user_id)
         if not enabled:
             logger.warning("Skill '%s' imported but enable failed", name)
 

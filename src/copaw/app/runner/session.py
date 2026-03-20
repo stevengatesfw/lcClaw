@@ -5,11 +5,15 @@ compatibility.
 Windows filenames cannot contain: \\ / : * ? " < > |
 This module wraps agentscope's JSONSession so that session_id and user_id
 are sanitized before being used as filenames.
+
+Sessions are stored per-user at users/<user_id>/sessions/<session_id>.json.
 """
 import os
 import re
 
 from agentscope.session import JSONSession
+
+from ...config.utils import get_sessions_dir_for_user
 
 
 # Characters forbidden in Windows filenames
@@ -31,6 +35,8 @@ class SafeJSONSession(JSONSession):
     """JSONSession subclass that sanitizes session_id / user_id before
     building file paths.
 
+    Sessions are stored under users/<user_id>/sessions/<session_id>.json.
+
     All other behaviour (save / load / state management) is inherited
     unchanged from :class:`JSONSession`.
     """
@@ -39,13 +45,11 @@ class SafeJSONSession(JSONSession):
         """Return a filesystem-safe save path.
 
         Overrides the parent implementation to ensure the generated
-        filename is valid on Windows, macOS and Linux.
+        filename is valid on Windows, macOS and Linux. When user
+        isolation is enabled, uses per-user sessions directory.
         """
-        os.makedirs(self.save_dir, exist_ok=True)
+        sessions_dir = get_sessions_dir_for_user(user_id)
+        os.makedirs(str(sessions_dir), exist_ok=True)
         safe_sid = sanitize_filename(session_id)
-        safe_uid = sanitize_filename(user_id) if user_id else ""
-        if safe_uid:
-            file_path = f"{safe_uid}_{safe_sid}.json"
-        else:
-            file_path = f"{safe_sid}.json"
-        return os.path.join(self.save_dir, file_path)
+        file_path = f"{safe_sid}.json"
+        return os.path.join(str(sessions_dir), file_path)

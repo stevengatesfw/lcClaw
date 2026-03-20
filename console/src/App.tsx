@@ -13,8 +13,15 @@ const GlobalStyle = createGlobalStyle`
 `;
 
 function App() {
+  // When deployed under /copaw/, router must use basename so pathname matches routes.
+  // Avoids "No routes matched location '/copaw/'" when opening /copaw/ directly.
+  const basename =
+    typeof window !== "undefined" && window.location.pathname.startsWith("/copaw")
+      ? "/copaw"
+      : "/";
+
   return (
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <GlobalStyle />
       <ConfigProvider {...bailianTheme} prefix="copaw" prefixCls="copaw">
         <MainLayout />

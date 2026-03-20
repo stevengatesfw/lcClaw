@@ -26,6 +26,8 @@ from ...agents.react_agent import CoPawAgent
 from ...agents.tools import read_file, write_file, edit_file
 from ...agents.utils.token_counting import _get_token_counter
 from ...config import load_config
+from ...config.utils import get_user_working_dir
+from ...context import set_current_working_dir, reset_current_working_dir, get_context_user_id
 from ...constant import (
     MEMORY_COMPACT_RATIO,
     WORKING_DIR,
@@ -38,17 +40,64 @@ class AgentRunner(Runner):
     def __init__(self) -> None:
         super().__init__()
         self.framework_type = "agentscope"
-        self._chat_manager = None  # Store chat_manager reference
+        self._chat_manager = None  # ChatManager instance (when not using factory)
+        self._chat_manager_factory = None  # Callable[[str], ChatManager] for per-user
         self._mcp_manager = None  # MCP client manager for hot-reload
-        self.memory_manager: MemoryManager | None = None
+        self._memory_manager_cache: dict[str, MemoryManager] = {}
 
-    def set_chat_manager(self, chat_manager):
+    def set_chat_manager(self, chat_manager_or_factory):
         """Set chat manager for auto-registration.
 
         Args:
-            chat_manager: ChatManager instance
+            chat_manager_or_factory: ChatManager instance, or callable(user_id) -> ChatManager
         """
-        self._chat_manager = chat_manager
+        if callable(chat_manager_or_factory):
+            self._chat_manager_factory = chat_manager_or_factory
+            self._chat_manager = None
+        else:
+            self._chat_manager_factory = None
+            self._chat_manager = chat_manager_or_factory
+
+    def _get_chat_manager(self, user_id: str | None):
+        """Resolve ChatManager for user_id (factory or single instance)."""
+        if self._chat_manager_factory is not None:
+            return self._chat_manager_factory(user_id or "")
+        return self._chat_manager
+
+    async def _get_memory_manager(self, user_id: str | None) -> MemoryManager | None:
+        """Resolve MemoryManager for user_id (per-user when isolation enabled).
+
+        Lazy-creates and caches MemoryManager per user. Each instance uses
+        users/<user_id> as working_dir when isolation is enabled.
+        """
+        cache_key = user_id or "default"
+        if cache_key in self._memory_manager_cache:
+            return self._memory_manager_cache[cache_key]
+        try:
+            config = load_config()
+            max_input_length = config.agents.running.max_input_length
+            chat_model, formatter = create_model_and_formatter()
+            token_counter = _get_token_counter()
+            toolkit = Toolkit()
+            toolkit.register_tool_function(read_file)
+            toolkit.register_tool_function(write_file)
+            toolkit.register_tool_function(edit_file)
+            working_dir = str(get_user_working_dir(user_id))
+            mgr = MemoryManager(
+                working_dir=working_dir,
+                chat_model=chat_model,
+                formatter=formatter,
+                token_counter=token_counter,
+                toolkit=toolkit,
+                max_input_length=max_input_length,
+                memory_compact_ratio=MEMORY_COMPACT_RATIO,
+            )
+            await mgr.start()
+            self._memory_manager_cache[cache_key] = mgr
+            return mgr
+        except Exception as e:
+            logger.exception("MemoryManager create for user %s failed: %s", cache_key, e)
+            return None
 
     def set_mcp_manager(self, mcp_manager):
         """Set MCP client manager for hot-reload support.
@@ -77,10 +126,12 @@ class AgentRunner(Runner):
 
         agent = None
         chat = None
+        mgr = None
         session_state_loaded = False
         try:
             session_id = request.session_id
-            user_id = request.user_id
+            # Prefer JWT context (set by UserIdContextMiddleware) over body; body may not be updated by middleware in some stacks
+            user_id = get_context_user_id() or getattr(request, "user_id", None)
             channel = getattr(request, "channel", DEFAULT_CHANNEL)
 
             logger.info(
@@ -98,17 +149,21 @@ class AgentRunner(Runner):
                 ),
             )
 
+            user_working_dir = get_user_working_dir(user_id)
+            set_current_working_dir(user_working_dir)
             env_context = build_env_context(
                 session_id=session_id,
                 user_id=user_id,
                 channel=channel,
-                working_dir=str(WORKING_DIR),
+                working_dir=str(user_working_dir),
             )
 
             # Get MCP clients from manager (hot-reloadable)
             mcp_clients = []
             if self._mcp_manager is not None:
                 mcp_clients = await self._mcp_manager.get_clients()
+
+            memory_manager = await self._get_memory_manager(user_id)
 
             config = load_config()
             max_iters = config.agents.running.max_iters
@@ -117,7 +172,7 @@ class AgentRunner(Runner):
             agent = CoPawAgent(
                 env_context=env_context,
                 mcp_clients=mcp_clients,
-                memory_manager=self.memory_manager,
+                memory_manager=memory_manager,
                 max_iters=max_iters,
                 max_input_length=max_input_length,
             )
@@ -136,8 +191,9 @@ class AgentRunner(Runner):
                 else:
                     name = "Media Message"
 
-            if self._chat_manager is not None:
-                chat = await self._chat_manager.get_or_create_chat(
+            mgr = self._get_chat_manager(user_id)
+            if mgr is not None:
+                chat = await mgr.get_or_create_chat(
                     session_id,
                     user_id,
                     channel,
@@ -196,6 +252,7 @@ class AgentRunner(Runner):
                 ) + e.args[1:]
             raise
         finally:
+            reset_current_working_dir()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(
                     session_id=session_id,
@@ -203,8 +260,8 @@ class AgentRunner(Runner):
                     agent=agent,
                 )
 
-            if self._chat_manager is not None and chat is not None:
-                await self._chat_manager.update_chat(chat)
+            if mgr is not None and chat is not None:
+                await mgr.update_chat(chat)
 
     async def init_handler(self, *args, **kwargs):
         """
@@ -224,43 +281,17 @@ class AgentRunner(Runner):
         session_dir = str(WORKING_DIR / "sessions")
         self.session = SafeJSONSession(save_dir=session_dir)
 
-        try:
-            if self.memory_manager is None:
-                # Get config for memory manager
-                config = load_config()
-                max_input_length = config.agents.running.max_input_length
-
-                # Create model and formatter
-                chat_model, formatter = create_model_and_formatter()
-
-                # Get token counter
-                token_counter = _get_token_counter()
-
-                # Create toolkit for memory manager
-                toolkit = Toolkit()
-                toolkit.register_tool_function(read_file)
-                toolkit.register_tool_function(write_file)
-                toolkit.register_tool_function(edit_file)
-
-                # Initialize MemoryManager with new parameters
-                self.memory_manager = MemoryManager(
-                    working_dir=str(WORKING_DIR),
-                    chat_model=chat_model,
-                    formatter=formatter,
-                    token_counter=token_counter,
-                    toolkit=toolkit,
-                    max_input_length=max_input_length,
-                    memory_compact_ratio=MEMORY_COMPACT_RATIO,
-                )
-            await self.memory_manager.start()
-        except Exception as e:
-            logger.exception(f"MemoryManager start failed: {e}")
+        # MemoryManager is now lazy-created per user in query_handler
 
     async def shutdown_handler(self, *args, **kwargs):
         """
         Shutdown handler.
         """
-        try:
-            await self.memory_manager.close()
-        except Exception as e:
-            logger.warning(f"MemoryManager stop failed: {e}")
+        for cache_key, mgr in list(self._memory_manager_cache.items()):
+            try:
+                await mgr.close()
+            except Exception as e:
+                logger.warning(
+                    "MemoryManager close for user %s failed: %s", cache_key, e
+                )
+        self._memory_manager_cache.clear()
