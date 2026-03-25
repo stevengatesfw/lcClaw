@@ -11,7 +11,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from ...config import get_heartbeat_config
+from ...config.utils import (
+    get_config_path_for_user,
+    get_heartbeat_config,
+    get_heartbeat_config_from_path,
+    iter_user_config_paths,
+)
 
 from ..console_push_store import append as push_store_append
 from .executor import CronExecutor
@@ -22,6 +27,15 @@ from .repo.base import BaseJobRepository
 HEARTBEAT_JOB_ID = "_heartbeat"
 
 logger = logging.getLogger(__name__)
+
+
+def _heartbeat_user_job_id(user_id: str) -> str:
+    """APScheduler-safe id for per-user heartbeat."""
+    safe = "".join(
+        c if c.isalnum() or c in "-_" else "_"
+        for c in (user_id or "default")
+    )
+    return f"_heartbeat_user_{safe}"
 
 
 @dataclass
@@ -37,10 +51,12 @@ class CronManager:
         runner: Any,
         channel_manager: Any,
         timezone: str = "UTC",
+        storage_isolation_enabled: bool = False,
     ):
         self._repo = repo
         self._runner = runner
         self._channel_manager = channel_manager
+        self._storage_isolation = storage_isolation_enabled
         self._scheduler = AsyncIOScheduler(timezone=timezone)
         self._executor = CronExecutor(
             runner=runner,
@@ -62,16 +78,19 @@ class CronManager:
             for job in jobs_file.jobs:
                 await self._register_or_update(job)
 
-            # Heartbeat: one interval job when enabled in config
-            hb = get_heartbeat_config()
-            if getattr(hb, "enabled", True):
-                interval_seconds = parse_heartbeat_every(hb.every)
-                self._scheduler.add_job(
-                    self._heartbeat_callback,
-                    trigger=IntervalTrigger(seconds=interval_seconds),
-                    id=HEARTBEAT_JOB_ID,
-                    replace_existing=True,
-                )
+            # Heartbeat: global (legacy) or per-user (storage isolation)
+            if self._storage_isolation:
+                await self._register_all_user_heartbeats()
+            else:
+                hb = get_heartbeat_config()
+                if getattr(hb, "enabled", True):
+                    interval_seconds = parse_heartbeat_every(hb.every)
+                    self._scheduler.add_job(
+                        self._heartbeat_callback,
+                        trigger=IntervalTrigger(seconds=interval_seconds),
+                        id=HEARTBEAT_JOB_ID,
+                        replace_existing=True,
+                    )
 
             self._started = True
 
@@ -122,6 +141,10 @@ class CronManager:
         async with self._lock:
             if not self._started:
                 return
+            if self._storage_isolation:
+                await self._register_all_user_heartbeats()
+                logger.info("user heartbeats rescheduled (storage isolation)")
+                return
             hb = get_heartbeat_config()
             if self._scheduler.get_job(HEARTBEAT_JOB_ID):
                 self._scheduler.remove_job(HEARTBEAT_JOB_ID)
@@ -140,6 +163,66 @@ class CronManager:
                 )
             else:
                 logger.info("heartbeat disabled, job removed")
+
+    async def reschedule_user_heartbeat(self, user_id: str) -> None:
+        """Reschedule heartbeat for one user (storage isolation only)."""
+        async with self._lock:
+            if not self._started or not self._storage_isolation:
+                return
+            jid = _heartbeat_user_job_id(user_id)
+            if self._scheduler.get_job(jid):
+                self._scheduler.remove_job(jid)
+            cfg_path = get_config_path_for_user(user_id)
+            if not cfg_path.is_file():
+                return
+            hb = get_heartbeat_config_from_path(cfg_path)
+            if not getattr(hb, "enabled", True):
+                logger.info("user %s heartbeat disabled, job removed", user_id)
+                return
+            interval_seconds = parse_heartbeat_every(hb.every)
+            self._scheduler.add_job(
+                self._make_user_heartbeat_callback(user_id),
+                trigger=IntervalTrigger(seconds=interval_seconds),
+                id=jid,
+                replace_existing=True,
+            )
+            logger.info(
+                "user heartbeat rescheduled: uid=%s every=%s",
+                user_id,
+                hb.every,
+            )
+
+    def _make_user_heartbeat_callback(self, user_id: str):
+        async def _cb() -> None:
+            try:
+                await run_heartbeat_once(
+                    runner=self._runner,
+                    channel_manager=self._channel_manager,
+                    config_path=get_config_path_for_user(user_id),
+                    heartbeat_user_id=user_id,
+                )
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("user heartbeat failed uid=%s", user_id)
+
+        return _cb
+
+    async def _register_all_user_heartbeats(self) -> None:
+        """Remove old user heartbeat jobs and register from users/*/config.json."""
+        for job in list(self._scheduler.get_jobs()):
+            jid = job.id
+            if isinstance(jid, str) and jid.startswith("_heartbeat_user_"):
+                self._scheduler.remove_job(jid)
+        for uid, cfg_path in iter_user_config_paths():
+            hb = get_heartbeat_config_from_path(cfg_path)
+            if not getattr(hb, "enabled", True):
+                continue
+            interval_seconds = parse_heartbeat_every(hb.every)
+            self._scheduler.add_job(
+                self._make_user_heartbeat_callback(uid),
+                trigger=IntervalTrigger(seconds=interval_seconds),
+                id=_heartbeat_user_job_id(uid),
+                replace_existing=True,
+            )
 
     async def run_job(self, job_id: str) -> None:
         """Trigger a job to run in the background (fire-and-forget).

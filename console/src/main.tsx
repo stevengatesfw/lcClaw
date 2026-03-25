@@ -1,7 +1,11 @@
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./i18n";
-import { setToken, syncTokenFromLCAgentLocalStorage } from "./api/tokenStore";
+import {
+  setToken,
+  syncTokenFromLCAgentLocalStorage,
+  isTrustedLcagentAuthMessage,
+} from "./api/tokenStore";
 import { AuthGuard } from "./components/AuthGuard";
 
 /** LCAgent auth message type - parent sends token when embedding lcClaw */
@@ -16,9 +20,13 @@ if (typeof window !== "undefined") {
   syncTokenFromLCAgentLocalStorage();
 
   window.addEventListener("message", (event) => {
-    if (event.data?.type === LCAGENT_AUTH_MESSAGE_TYPE && event.data?.token) {
-      setToken(event.data.token);
+    if (event.data?.type !== LCAGENT_AUTH_MESSAGE_TYPE || !event.data?.token) {
+      return;
     }
+    if (!isTrustedLcagentAuthMessage(event)) {
+      return;
+    }
+    setToken(event.data.token);
   });
 }
 

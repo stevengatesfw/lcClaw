@@ -182,8 +182,10 @@ def load_envs(
 def save_envs(
     envs: dict[str, str],
     path: Optional[Path] = None,
+    *,
+    apply_environ: bool = True,
 ) -> None:
-    """Write env vars to envs.json and sync to ``os.environ``."""
+    """Write env vars to envs.json and optionally sync to ``os.environ``."""
     if path is None:
         path = get_envs_json_path()
         _migrate_legacy_envs_json(path)
@@ -197,7 +199,8 @@ def save_envs(
         json.dump(envs, fh, indent=2, ensure_ascii=False)
     _chmod_best_effort(path, 0o600)
 
-    _sync_environ(old, envs)
+    if apply_environ:
+        _sync_environ(old, envs)
 
 
 def set_env_var(
@@ -211,11 +214,16 @@ def set_env_var(
     return envs
 
 
-def delete_env_var(key: str) -> dict[str, str]:
+def delete_env_var(
+    key: str,
+    path: Optional[Path] = None,
+    *,
+    apply_environ: bool = True,
+) -> dict[str, str]:
     """Delete a single env var. Returns updated dict."""
-    envs = load_envs()
+    envs = load_envs(path)
     envs.pop(key, None)
-    save_envs(envs)
+    save_envs(envs, path, apply_environ=apply_environ)
     return envs
 
 

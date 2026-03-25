@@ -51,6 +51,36 @@ export function isInLCAgentIframe(): boolean {
   }
 }
 
+/**
+ * Reject untrusted postMessage origins (see main.tsx lcagent:auth handler).
+ * Same-origin always allowed. Cross-origin only if listed in
+ * VITE_LCAGENT_ALLOWED_ORIGINS and event.source is window.parent.
+ */
+export function isTrustedLcagentAuthMessage(event: MessageEvent): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const { origin } = event;
+  if (!origin || origin === "null") {
+    return false;
+  }
+  if (origin === window.location.origin) {
+    return true;
+  }
+  const raw = import.meta.env.VITE_LCAGENT_ALLOWED_ORIGINS as string | undefined;
+  if (!raw?.trim()) {
+    return false;
+  }
+  const allowed = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!allowed.includes(origin)) {
+    return false;
+  }
+  return event.source === window.parent;
+}
+
 
 /** LCAgent 控制台与 iframe 内 CoPaw 同域时写入的 key，与 lcagent-k8s front 一致 */
 const LCAGENT_CONSOLE_TOKEN_KEY = "console_token";

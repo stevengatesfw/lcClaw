@@ -2,12 +2,15 @@
 """API endpoints for environment variable management."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ...config.utils import copaw_storage_isolation_enabled
 from ...envs import load_envs, save_envs, delete_env_var
+from ..storage_deps import get_storage_envs_json_path
 
 router = APIRouter(prefix="/envs", tags=["envs"])
 
@@ -34,9 +37,11 @@ class EnvVar(BaseModel):
     response_model=List[EnvVar],
     summary="List all environment variables",
 )
-async def list_envs() -> List[EnvVar]:
+async def list_envs(
+    env_path: Path = Depends(get_storage_envs_json_path),
+) -> List[EnvVar]:
     """Return all configured env vars."""
-    envs = load_envs()
+    envs = load_envs(env_path)
     return [EnvVar(key=k, value=v) for k, v in sorted(envs.items())]
 
 
@@ -49,6 +54,7 @@ async def list_envs() -> List[EnvVar]:
 )
 async def batch_save_envs(
     body: Dict[str, str],
+    env_path: Path = Depends(get_storage_envs_json_path),
 ) -> List[EnvVar]:
     """Batch save – full replacement of all env vars."""
     # Validate keys
@@ -59,7 +65,11 @@ async def batch_save_envs(
                 detail="Key cannot be empty",
             )
     cleaned = {k.strip(): v for k, v in body.items()}
-    save_envs(cleaned)
+    save_envs(
+        cleaned,
+        env_path,
+        apply_environ=not copaw_storage_isolation_enabled(),
+    )
     return [EnvVar(key=k, value=v) for k, v in sorted(cleaned.items())]
 
 
@@ -68,13 +78,20 @@ async def batch_save_envs(
     response_model=List[EnvVar],
     summary="Delete an environment variable",
 )
-async def delete_env(key: str) -> List[EnvVar]:
+async def delete_env(
+    key: str,
+    env_path: Path = Depends(get_storage_envs_json_path),
+) -> List[EnvVar]:
     """Delete a single env var."""
-    envs = load_envs()
+    envs = load_envs(env_path)
     if key not in envs:
         raise HTTPException(
             404,
             detail=f"Env var '{key}' not found",
         )
-    envs = delete_env_var(key)
+    envs = delete_env_var(
+        key,
+        env_path,
+        apply_environ=not copaw_storage_isolation_enabled(),
+    )
     return [EnvVar(key=k, value=v) for k, v in sorted(envs.items())]

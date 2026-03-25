@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 
+from pathlib import Path
 from typing import Any, List
 
-from fastapi import APIRouter, Body, HTTPException, Path, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Path as PathParam, Request
 
 from ...config import (
     load_config,
     save_config,
-    get_heartbeat_config,
     ChannelConfig,
     ChannelConfigUnion,
     get_available_channels,
 )
+from ...config.utils import (
+    copaw_storage_isolation_enabled,
+    get_heartbeat_config_from_path,
+)
 from ..channels.registry import BUILTIN_CHANNEL_KEYS
 from ...config.config import HeartbeatConfig
 
+from ..storage_deps import get_storage_config_path
+from ..auth import get_current_user_id_required
 from .schemas_config import HeartbeatBody
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -25,9 +31,11 @@ router = APIRouter(prefix="/config", tags=["config"])
     summary="List all channels",
     description="Retrieve configuration for all available channels",
 )
-async def list_channels() -> dict:
+async def list_channels(
+    config_path: Path = Depends(get_storage_config_path),
+) -> dict:
     """List all channel configs (filtered by available channels)."""
-    config = load_config()
+    config = load_config(config_path)
     available = get_available_channels()
 
     # Get all channel configs from model_dump and __pydantic_extra__
@@ -75,11 +83,12 @@ async def put_channels(
         ...,
         description="Complete channel configuration",
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> ChannelConfig:
     """Update all channel configs."""
-    config = load_config()
+    config = load_config(config_path)
     config.channels = channels_config
-    save_config(config)
+    save_config(config, config_path)
     return channels_config
 
 
@@ -90,11 +99,12 @@ async def put_channels(
     description="Retrieve configuration for a specific channel by name",
 )
 async def get_channel(
-    channel_name: str = Path(
+    channel_name: str = PathParam(
         ...,
         description="Name of the channel to retrieve",
         min_length=1,
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> ChannelConfigUnion:
     """Get a specific channel config by name."""
     available = get_available_channels()
@@ -103,7 +113,7 @@ async def get_channel(
             status_code=404,
             detail=f"Channel '{channel_name}' not found",
         )
-    config = load_config()
+    config = load_config(config_path)
     single_channel_config = getattr(config.channels, channel_name, None)
     if single_channel_config is None:
         extra = getattr(config.channels, "__pydantic_extra__", None) or {}
@@ -123,7 +133,7 @@ async def get_channel(
     description="Update configuration for a specific channel by name",
 )
 async def put_channel(
-    channel_name: str = Path(
+    channel_name: str = PathParam(
         ...,
         description="Name of the channel to update",
         min_length=1,
@@ -132,6 +142,7 @@ async def put_channel(
         ...,
         description="Updated channel configuration",
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> ChannelConfigUnion:
     """Update a specific channel config by name."""
     available = get_available_channels()
@@ -140,11 +151,11 @@ async def put_channel(
             status_code=404,
             detail=f"Channel '{channel_name}' not found",
         )
-    config = load_config()
+    config = load_config(config_path)
 
     # Allow setting extra (plugin) channel config
     setattr(config.channels, channel_name, single_channel_config)
-    save_config(config)
+    save_config(config, config_path)
     return single_channel_config
 
 
@@ -153,9 +164,11 @@ async def put_channel(
     summary="Get heartbeat config",
     description="Return current heartbeat config (interval, target, etc.)",
 )
-async def get_heartbeat() -> Any:
+async def get_heartbeat(
+    config_path: Path = Depends(get_storage_config_path),
+) -> Any:
     """Return effective heartbeat config (from file or default)."""
-    hb = get_heartbeat_config()
+    hb = get_heartbeat_config_from_path(config_path)
     return hb.model_dump(mode="json", by_alias=True)
 
 
@@ -167,9 +180,11 @@ async def get_heartbeat() -> Any:
 async def put_heartbeat(
     request: Request,
     body: HeartbeatBody = Body(..., description="Heartbeat configuration"),
+    config_path: Path = Depends(get_storage_config_path),
+    uid: str = Depends(get_current_user_id_required),
 ) -> Any:
     """Update heartbeat config and reschedule the heartbeat job."""
-    config = load_config()
+    config = load_config(config_path)
     hb = HeartbeatConfig(
         enabled=body.enabled,
         every=body.every,
@@ -177,10 +192,13 @@ async def put_heartbeat(
         active_hours=body.active_hours,
     )
     config.agents.defaults.heartbeat = hb
-    save_config(config)
+    save_config(config, config_path)
 
     cron_manager = getattr(request.app.state, "cron_manager", None)
     if cron_manager is not None:
-        await cron_manager.reschedule_heartbeat()
+        if copaw_storage_isolation_enabled() and uid:
+            await cron_manager.reschedule_user_heartbeat(uid)
+        else:
+            await cron_manager.reschedule_heartbeat()
 
     return hb.model_dump(mode="json", by_alias=True)

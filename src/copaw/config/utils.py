@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from ..constant import (
+    CONFIG_FILE,
     HEARTBEAT_FILE,
     JOBS_FILE,
     CHATS_FILE,
@@ -457,3 +458,51 @@ def get_active_skills_dir_for_user(user_id: Optional[str]) -> Path:
     """Return active_skills directory for a user. Always uses per-user dir."""
     uid = user_id or DEFAULT_USER_ID
     return (USERS_DIR / uid / "active_skills").expanduser()
+
+
+def copaw_storage_isolation_enabled() -> bool:
+    """True when LCAgent JWT is required for storage (same flag as chat isolation)."""
+    return bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
+
+
+def get_config_path_for_user(user_id: Optional[str]) -> Path:
+    """Per-user config.json under users/<user_id>/ (same layout as chats)."""
+    return (get_user_working_dir(user_id) / CONFIG_FILE).expanduser()
+
+
+def get_jobs_path_for_user(user_id: Optional[str]) -> Path:
+    """Per-user cron jobs.json."""
+    return (get_user_working_dir(user_id) / JOBS_FILE).expanduser()
+
+
+def get_heartbeat_query_path_for_user(user_id: Optional[str]) -> Path:
+    """HEARTBEAT.md next to per-user config (users/<uid>/HEARTBEAT.md)."""
+    return get_config_path_for_user(user_id).parent.joinpath(HEARTBEAT_FILE)
+
+
+def get_effective_config_path_for_runner(user_id: Optional[str]) -> Path:
+    """Config file for agent/cron heartbeat when isolation is on vs global."""
+    if copaw_storage_isolation_enabled():
+        return get_config_path_for_user(user_id)
+    return get_config_path()
+
+
+def get_heartbeat_config_from_path(config_path: Path) -> HeartbeatConfig:
+    """Load heartbeat section from a specific config file."""
+    cfg = load_config(config_path)
+    hb = cfg.agents.defaults.heartbeat
+    return hb if hb is not None else HeartbeatConfig()
+
+
+def iter_user_config_paths() -> list[tuple[str, Path]]:
+    """List (user_id, config.json path) for each ``users/<user_id>/config.json``."""
+    out: list[tuple[str, Path]] = []
+    if not USERS_DIR.is_dir():
+        return out
+    for child in sorted(USERS_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        cp = child / CONFIG_FILE
+        if cp.is_file():
+            out.append((child.name, cp))
+    return out
