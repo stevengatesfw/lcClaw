@@ -15,9 +15,10 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
 
 from ..base import ContentType
 
-from .constants import SENT_VIA_WEBHOOK
+from .constants import SENT_VIA_AI_CARD, SENT_VIA_WEBHOOK
 from .content_utils import (
     conversation_id_from_chatbot_message,
+    conversation_type_from_chatbot_message,
     dingtalk_content_from_type,
     get_type_mapping,
     sender_from_chatbot_message,
@@ -46,6 +47,7 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
         bot_prefix: str,
         download_url_fetcher,
         try_accept_message: Optional[Callable[[str], bool]] = None,
+        check_allowlist: Optional[Callable[[str, bool], tuple]] = None,
     ):
         super().__init__()
         self._main_loop = main_loop
@@ -53,6 +55,7 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
         self._bot_prefix = bot_prefix
         self._download_url_fetcher = download_url_fetcher
         self._try_accept_message = try_accept_message
+        self._check_allowlist = check_allowlist
 
     def _emit_native_threadsafe(self, native: dict) -> None:
         if self._enqueue_callback:
@@ -66,9 +69,13 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
         download_code: str,
         robot_code: str,
         mapped: str,
+        filename_hint: Optional[str] = None,
     ) -> Optional[Any]:
         """Fetch media by download_code; return Content to append or None."""
-        hint = FILENAME_HINT_BY_MAPPED.get(mapped, DEFAULT_FILENAME_HINT)
+        hint = (filename_hint or "").strip() or FILENAME_HINT_BY_MAPPED.get(
+            mapped,
+            DEFAULT_FILENAME_HINT,
+        )
         try:
             fut = asyncio.run_coroutine_threadsafe(
                 self._download_url_fetcher(
@@ -82,6 +89,15 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
             return dingtalk_content_from_type(mapped, download_url)
         except Exception:
             return None
+
+    @staticmethod
+    def _extract_filename_hint(payload: Dict[str, Any]) -> Optional[str]:
+        """Extract filename hint from DingTalk payload variants."""
+        for key in ("fileName", "file_name", "filename", "name", "title"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return None
 
     def _parse_rich_content(
         self,
@@ -107,12 +123,14 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                 # Text may be under "text" or "content" (API variation).
                 item_text = item.get("text") or item.get("content")
                 if item_text is not None:
-                    content.append(
-                        TextContent(
-                            type=ContentType.TEXT,
-                            text=(item_text or "").strip(),
-                        ),
-                    )
+                    stripped = (item_text or "").strip()
+                    if stripped:
+                        content.append(
+                            TextContent(
+                                type=ContentType.TEXT,
+                                text=stripped,
+                            ),
+                        )
                 # Picture items may use pictureDownloadCode or downloadCode.
                 dl_code = (
                     item.get("downloadCode")
@@ -126,10 +144,12 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                     item.get("type", "file"),
                     item.get("type", "file"),
                 )
+                filename_hint = self._extract_filename_hint(item)
                 part_content = self._fetch_download_url_and_content(
                     dl_code,
                     robot_code,
                     mapped,
+                    filename_hint=filename_hint,
                 )
                 if part_content is not None:
                     content.append(part_content)
@@ -154,10 +174,12 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                     )
                     if mapped not in ("image", "file", "video", "audio"):
                         mapped = "file"
+                    filename_hint = self._extract_filename_hint(c)
                     part_content = self._fetch_download_url_and_content(
                         dl_code,
                         robot_code,
                         mapped,
+                        filename_hint=filename_hint,
                     )
                     if part_content is not None:
                         content.append(part_content)
@@ -228,13 +250,48 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
             conversation_id = conversation_id_from_chatbot_message(
                 incoming_message,
             )
+            conversation_type = conversation_type_from_chatbot_message(
+                incoming_message,
+            )
+            is_group = conversation_type == "group"
+
+            if self._check_allowlist:
+                allowed, error_msg = self._check_allowlist(
+                    sender,
+                    is_group,
+                )
+                if not allowed:
+                    logger.info(
+                        "dingtalk allowlist blocked: sender=%s is_group=%s",
+                        sender,
+                        is_group,
+                    )
+                    self.reply_text(
+                        self._bot_prefix + (error_msg or ""),
+                        incoming_message,
+                    )
+                    return dingtalk_stream.AckMessage.STATUS_OK, "ok"
+
+            is_bot_mentioned = bool(raw_data.get("isInAtList"))
+
             loop = asyncio.get_running_loop()
             reply_future: asyncio.Future[str] = loop.create_future()
             meta: Dict[str, Any] = {
                 "incoming_message": incoming_message,
                 "reply_future": reply_future,
                 "reply_loop": loop,
+                "conversation_type": conversation_type,
+                "is_group": is_group,
+                "sender_staff_id": getattr(
+                    incoming_message,
+                    "sender_staff_id",
+                    None,
+                )
+                or getattr(incoming_message, "senderStaffId", None)
+                or "",
             }
+            if is_bot_mentioned:
+                meta["bot_mentioned"] = True
             if conversation_id:
                 meta["conversation_id"] = conversation_id
             if raw_msg_id:
@@ -260,6 +317,8 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
                     "session_webhook_expired_time",
                     None,
                 )
+                if sw_exp is not None:
+                    meta["session_webhook_expired_time"] = int(sw_exp)
                 logger.info(
                     "dingtalk recv: session_webhook present "
                     "session_from_url=%s "
@@ -307,7 +366,10 @@ class DingTalkChannelHandler(dingtalk_stream.ChatbotHandler):
             self._emit_native_threadsafe(native)
 
             response_text = await reply_future
-            if response_text == SENT_VIA_WEBHOOK:
+            if response_text == SENT_VIA_AI_CARD:
+                logger.info("sent to=%s via ai card", sender)
+                self.reply_text(" ", incoming_message)
+            elif response_text == SENT_VIA_WEBHOOK:
                 logger.info(
                     "sent to=%s via sessionWebhook (multi-message)",
                     sender,

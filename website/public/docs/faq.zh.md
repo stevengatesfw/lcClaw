@@ -36,7 +36,10 @@ pip install copaw
 
 ```
 docker pull agentscope/copaw:latest
-docker run -p 127.0.0.1:8088:8088 -v copaw-data:/app/working agentscope/copaw:latest
+docker run -p 127.0.0.1:8088:8088 \
+  -v copaw-data:/app/working \
+  -v copaw-secrets:/app/working.secret \
+  agentscope/copaw:latest
 ```
 
 > **⚠️ Windows 企业版 LTSC 用户特别提示**
@@ -90,8 +93,16 @@ pip install -e .
 
 ```
 docker pull agentscope/copaw:latest
-docker run -p 127.0.0.1:8088:8088 -v copaw-data:/app/working agentscope/copaw:latest
+docker run -p 127.0.0.1:8088:8088 \
+  -v copaw-data:/app/working \
+  -v copaw-secrets:/app/working.secret \
+  agentscope/copaw:latest
 ```
+
+5. 如果你使用的是 Windows 桌面版（exe），目前需要卸载后重新安装：
+   - 在电脑中卸载 CoPaw
+   - 下载最新版本：https://github.com/agentscope-ai/CoPaw/releases
+   - 重新安装
 
 升级后重启服务 copaw app。
 
@@ -111,6 +122,66 @@ copaw app
 
 控制台默认地址为 `http://127.0.0.1:8088/`，使用默认配置快速初始化后，可以进入控制台快捷自定义相关内容。详情请见[快速开始](https://copaw.agentscope.io/docs/quickstart)。
 
+### Windows 端口 8088 冲突问题
+
+在 Windows 上，Hyper-V 和 WSL2 可能会保留某些端口范围，这可能与 CoPaw 的默认端口 **8088** 冲突。此问题影响所有安装方式（pip 安装、脚本安装、Docker、桌面应用）。
+
+**症状：**
+
+- 报错：`Address already in use` 或 `OSError: [Errno 98] Address already in use`
+- 报错：`An attempt was made to access a socket in a way forbidden by its access permissions`
+- CoPaw 无法启动，或浏览器无法访问 `http://127.0.0.1:8088/`
+
+**检查端口 8088 是否被 Windows 保留：**
+
+在 PowerShell 或 CMD 中运行：
+
+```powershell
+netsh interface ipv4 show excludedportrange protocol=tcp
+```
+
+如果 8088 出现在排除范围内，说明已被系统保留。
+
+**解决方案：使用其他端口**
+
+**pip 安装 / 脚本安装：**
+
+```bash
+copaw app --port 8090
+```
+
+然后在浏览器中打开 `http://127.0.0.1:8090/`。
+
+**Docker 安装：**
+
+```bash
+docker run -p 127.0.0.1:8090:8088 \
+  -v copaw-data:/app/working \
+  -v copaw-secrets:/app/working.secret \
+  agentscope/copaw:latest
+```
+
+然后在浏览器中打开 `http://127.0.0.1:8090/`。
+
+**Windows 桌面应用：**
+
+目前桌面应用默认使用 8088 端口。如果遇到此问题，可以：
+
+1. 改用终端运行 `copaw app --port 8090`
+2. 或从 Windows 保留端口范围中排除 8088（需要管理员权限，可能影响其他服务）
+
+**进阶：防止 Windows 保留 8088 端口**
+
+在管理员权限的 PowerShell 中运行：
+
+```powershell
+# 从动态端口范围中排除 8088
+netsh int ipv4 set dynamicport tcp start=49152 num=16384
+# 重启 Windows 使更改生效
+```
+
+> ⚠️ **警告**：这会更改系统级端口配置，请确保了解相关影响后再操作。
+
 ### 开源地址
 
 CoPaw 已开源，官方仓库地址：
@@ -118,16 +189,158 @@ CoPaw 已开源，官方仓库地址：
 
 ### 最新版本升级内容如何查看
 
-具体版本变更可在 CoPaw GitHub 仓库 [Releases](https://github.com/agentscope-ai/CoPaw/releases) 中查看。
+具体版本变更可在官网 [更新日志](https://copaw.agentscope.io/release-notes/?lang=zh) 或 CoPaw GitHub 仓库 [Releases](https://github.com/agentscope-ai/CoPaw/releases) 中查看。
 
 ### 如何配置模型
 
-在控制台进入 **设置 → 模型** 中进行配置，详情请见文档 [控制台 → 模型](https://copaw.agentscope.io/docs/console#%E6%A8%A1%E5%9E%8B)：
+在控制台进入 **设置 → 模型** 中进行配置，详情请见文档 [模型](https://copaw.agentscope.io/docs/models)：
 
-- 云端模型：填写提供商 API Key（如 ModelScope、DashScope 或自定义提供商），再选择活跃模型。
-- 本地模型：支持 `llama.cpp`、`MLX` 和 Ollama。下载后可在同页选择活跃模型。
+- 云端模型：填写提供商 API Key（如 ModelScope、DashScope 或自定义提供商）。
+- 本地模型：支持 `llama.cpp`，LM Studio 和 Ollama。
+
+配置好模型后，可在模型页面最上方的 **默认 LLM** 中选择目标提供商和目标模型，保存后即为全局默认模型。
+
+如果想为不同智能体配置单独的模型，可以在控制台页面左上角切换智能体，并在 **聊天** 页面右上角为当前智能体选择单独的模型。
 
 命令行也可使用 `copaw models` 系列命令完成配置、下载和切换，详情请见文档 [CLI → 模型与环境变量 → copaw models](https://copaw.agentscope.io/docs/cli#copaw-models)。
+
+### 如何使用 CoPaw-Flash 系列模型
+
+CoPaw-Flash 是 CoPaw 官方根据 CoPaw 的应用场景专门调优的系列模型，共有 2B, 4B 和 9B 三个版本，且每个版本除原始模型外还提供了 4 bit 和 8 bit 两种量化版本，适合不同的显存环境和性能需求。
+
+CoPaw-Flash 模型目前已经在 [ModelScope](https://www.modelscope.cn/organization/AgentScope?tab=model) 以及 [Hugging Face](https://huggingface.co/agentscope-ai/models) 上开源，你可以直接从这两个平台下载使用。
+
+CoPaw 内置的本地提供商均可接入 CoPaw-Flash 模型：
+
+**CoPaw Local (llama.cpp)**
+
+直接在 CoPaw Local 的模型界面中选择下载 CoPaw-Flash 模型并启动即可。
+
+![Start Model](https://gw.alicdn.com/imgextra/i1/O1CN01NSNFUN1I21RynZwGy_!!6000000000834-2-tps-1224-1194.png)
+
+> CoPaw Local 目前仍处于测试阶段，对不同设备的兼容性以及运行稳定性仍在持续优化中，如果你在使用过程中遇到任何问题，欢迎随时在 GitHub 上提 issue 反馈。
+> 如果无法正常使用 CoPaw Local，建议先使用 Ollama 或 LM Studio 部署 CoPaw-Flash 模型。
+
+**Ollama**:
+
+1. 从 [ModelScope](https://www.modelscope.cn/organization/AgentScope?tab=model) 或 [Hugging Face](https://huggingface.co/agentscope-ai/models) 下载 CoPaw-Flash 量化版模型，这些模型后缀为 `Q8_0` 或 `Q4_K_M`，例如 [CoPaw-Flash-4B-Q4_K_M](https://www.modelscope.cn/models/AgentScope/CoPaw-Flash-4B-Q4_K_M)。
+
+   - 使用 ModelScope CLI 下载：
+
+     ```bash
+     modelscope download --model AgentScope/CoPaw-Flash-4B-Q4_K_M README.md --local_dir ./dir
+     ```
+
+   - 使用 Hugging Face CLI 下载：
+
+     ```bash
+     hf download agentscope-ai/CoPaw-Flash-4B-Q4_K_M --local_dir ./dir
+     ```
+
+2. 从 [Ollama](https://ollama.com/download) 官网下载安装 Ollama 并启动。
+
+3. 借助 Ollama 的 `ollama create` 命令将下载好的模型导入 Ollama：
+
+创建一个包含以下内容的文本文件 `copaw-flash.txt`，注意将 `/path/to/your/copaw-xxx.gguf` 替换为你下载的 CoPaw-Flash 模型仓库中 `.gguf` 文件的绝对路径：
+
+```
+FROM /path/to/your/copaw-xxx.gguf
+TEMPLATE {{ .Prompt }}
+RENDERER qwen3.5
+PARSER qwen3.5
+PARAMETER presence_penalty 1.5
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+```
+
+然后在终端中运行如下指令：
+
+```bash
+ollama create copaw-flash -f copaw-flash.txt
+```
+
+4. 在 CoPaw 的模型配置中选择 Ollama 提供商，并在模型页面中自动获取模型即可。
+
+**LM Studio**:
+
+1. 参考 Ollama 的步骤 1 下载合适的 CoPaw-Flash 量化版模型。
+
+2. 从 [LM Studio](https://lmstudio.ai/) 官网下载安装 LM Studio 并启动。
+
+3. 在命令行中使用以下指令将下载好的模型导入 LM Studio：
+
+```bash
+lms import /path/to/your/copaw-xxx.gguf -c -y --user-repo AgentScope/CoPaw-Flash
+```
+
+4. 在 CoPaw 的模型配置中选择 LM Studio 提供商，并在模型页面中自动获取模型即可。
+
+### 使用 Ollama / LM Studio 部署的模型时，为什么 CoPaw 无法完成多轮交互、复杂工具调用，或记不住之前的指令？
+
+这类问题通常不是 CoPaw 本身异常，而是**模型上下文长度配置过小**导致的。
+
+当你使用 Ollama 或 LM Studio 部署本地模型时，如果模型的 `context length` 设置太低，CoPaw 在以下场景中就可能表现异常：
+
+- 无法稳定完成多轮对话
+- 执行复杂工具调用时中途丢失上下文
+- 记不住前面几轮中已经给出的要求或指令
+- 长任务执行到一半开始偏离目标
+
+**解决方法：**
+
+- 运行 CoPaw 前，请将模型的 `context length` 设置为**至少 32K**
+- 如果任务较复杂、工具调用较多或对话轮次较长，实际可能需要设置到**高于 32K**
+
+> ⚠️ **运行 CoPaw 前必须将上下文长度设为 32K 以上**
+>
+> 对于 Ollama 和 LM Studio 部署的本地模型，如果要让 CoPaw 正常完成多轮交互、复杂工具调用和长上下文任务，通常必须提供 **32K 或更高** 的上下文长度；在更复杂的场景下，可能还需要进一步提高。
+>
+> 注意，更大的上下文窗口会显著增加显存 / 内存占用和计算开销，请确认你的本地机器能够支持。
+
+**Ollama 配置示意图：**
+
+![Ollama context length 配置示意图](https://img.alicdn.com/imgextra/i3/O1CN01JrqRjE1l6FxuO3IMl_!!6000000004769-2-tps-699-656.png)
+
+**LM Studio 配置示意图：**
+
+![LM Studio context length 配置示意图](https://img.alicdn.com/imgextra/i4/O1CN01LWyG6o21E4Zovqv4G_!!6000000006952-2-tps-923-618.png)
+
+### 定时任务错误排查
+
+在控制台进入 **控制 → 定时任务** ，在这里可以创建和管理定时任务。
+
+![cron](https://img.alicdn.com/imgextra/i2/O1CN018UMwzM1stRomiHjJt_!!6000000005824-2-tps-3822-2064.png)
+
+最方便的定时任务创建方式是，在你想要获取定时任务返回结果的频道，与CoPaw对话，让CoPaw帮你创建一个定时任务。例如，可以直接与CoPaw对话：“帮我创建一个定时任务，每隔五分钟提醒我喝水。”之后可以在控制台中看到状态为已启用的定时任务。
+
+如果定时任务没有正常启动，可以按照以下几个步骤排查：
+
+1. 首先确认 CoPaw 服务是在正常运行中的。
+
+2. 定时任务的 **启用状态** 是否为 **已启动**。
+
+   ![enable](https://img.alicdn.com/imgextra/i2/O1CN01K16c611eHWOs6GKlQ_!!6000000003846-2-tps-3236-888.png)
+
+3. 定时任务的 **DispatchChannel** 是否被正确地设置为了想要获取返回结果的频道，如 console、dingtalk、feishu、discord、imessage 等。
+
+   ![channel](https://img.alicdn.com/imgextra/i3/O1CN01G55gOc1YvveHrxqTY_!!6000000003122-2-tps-3234-876.png)
+
+4. **DispatchTargetUserID** 和 **DispatchTargetSessionID** 的值是否设置正确。
+
+   ![id](https://img.alicdn.com/imgextra/i1/O1CN01iohIk41N0G0CN6sVq_!!6000000001507-2-tps-3234-874.png)
+
+   核查方式为，在控制台进入 **控制 → 会话**，找到刚刚创建定时任务的会话。如果想要定时任务返回到这个会话中，需要核查 **UserID** 和 **SessionID** 是否与定时任务的 **DispatchTargetUserID** 和 **DispatchTargetSessionID** 相同。
+
+   ![id](https://img.alicdn.com/imgextra/i1/O1CN01svdDS41a2d3fqShLx_!!6000000003272-2-tps-3236-1068.png)
+
+5. 如果觉得定时任务的触发间隔时间不对，需要确认一下定时任务的 **执行时间（Cron）**是否正确。
+
+   ![cron](https://img.alicdn.com/imgextra/i3/O1CN01BtYIqK1Xb1xdYmcai_!!6000000002941-2-tps-3242-892.png)
+
+6. 排查结束后，如果想确认一下定时任务是否创建成功，且能成功触发，可以点击 **立即执行**，若成功创建，则可在对应频道收到回复。或者也可以直接与 CoPaw 对话：“帮我触发一下刚刚创建的提醒喝水定时任务”。
+
+   ![exec](https://img.alicdn.com/imgextra/i3/O1CN01a1IIsY1PhQZ5YXlCe_!!6000000001872-2-tps-3232-890.png)
 
 ### 如何管理Skill
 

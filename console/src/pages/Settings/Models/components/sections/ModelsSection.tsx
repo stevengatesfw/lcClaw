@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
 import { SaveOutlined } from "@ant-design/icons";
-import { Select, Button, message } from "@agentscope-ai/design";
+import { Select, Button } from "@agentscope-ai/design";
 import type { ModelSlotRequest } from "../../../../../api/types";
 import api from "../../../../../api";
 import { useTranslation } from "react-i18next";
+import { useAppMessage } from "../../../../../hooks/useAppMessage";
 import styles from "../../index.module.less";
 
 interface ModelsSectionProps {
@@ -12,10 +13,11 @@ interface ModelsSectionProps {
     name: string;
     models?: Array<{ id: string; name: string }>;
     extra_models?: Array<{ id: string; name: string }>;
-    current_base_url?: string;
-    current_api_key?: string;
+    base_url?: string;
+    api_key?: string;
     is_custom: boolean;
     is_local?: boolean;
+    require_api_key?: boolean;
   }>;
   activeModels: {
     active_llm?: {
@@ -40,18 +42,20 @@ export function ModelsSection({
     undefined,
   );
   const [dirty, setDirty] = useState(false);
+  const { message } = useAppMessage();
 
   const currentSlot = activeModels?.active_llm;
 
   const eligible = useMemo(
     () =>
       providers.filter((p) => {
-        const hasModels = (p.models?.length ?? 0) > 0;
+        const hasModels =
+          (p.models?.length ?? 0) + (p.extra_models?.length ?? 0) > 0;
         if (!hasModels) return false;
-        if (p.id === "ollama") return !!p.current_base_url;
-        if (p.is_local) return true;
-        if (p.is_custom) return !!p.current_base_url;
-        return !!p.current_api_key;
+        if (p.require_api_key === false) return !!p.base_url;
+        if (p.is_custom) return !!p.base_url;
+        if (p.require_api_key ?? true) return !!p.api_key;
+        return true;
       }),
     [providers],
   );
@@ -65,7 +69,10 @@ export function ModelsSection({
   }, [currentSlot?.provider_id, currentSlot?.model]);
 
   const chosenProvider = providers.find((p) => p.id === selectedProviderId);
-  const modelOptions = chosenProvider?.models ?? [];
+  const modelOptions = [
+    ...(chosenProvider?.models ?? []),
+    ...(chosenProvider?.extra_models ?? []),
+  ];
   const hasModels = modelOptions.length > 0;
 
   const handleProviderChange = (pid: string) => {
@@ -85,6 +92,7 @@ export function ModelsSection({
     const body: ModelSlotRequest = {
       provider_id: selectedProviderId,
       model: selectedModel,
+      scope: "global",
     };
 
     setSaving(true);
@@ -110,18 +118,6 @@ export function ModelsSection({
 
   return (
     <div className={styles.slotSection}>
-      <div className={styles.slotHeader}>
-        <h3 className={styles.slotTitle}>{t("models.llmConfiguration")}</h3>
-        {currentSlot?.provider_id && currentSlot?.model && (
-          <span className={styles.slotCurrent}>
-            {t("models.active", {
-              provider: currentSlot.provider_id,
-              model: currentSlot.model,
-            })}
-          </span>
-        )}
-      </div>
-
       <div className={styles.slotForm}>
         <div className={styles.slotField}>
           <label className={styles.slotLabel}>{t("models.provider")}</label>
@@ -175,6 +171,7 @@ export function ModelsSection({
           </Button>
         </div>
       </div>
+      <p className={styles.slotDescription}>{t("models.llmDescription")}</p>
     </div>
   );
 }

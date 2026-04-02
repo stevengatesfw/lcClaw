@@ -43,6 +43,8 @@ class RenderStyle:
     supports_code_fence: bool = True
     use_emoji: bool = True
     filter_tool_messages: bool = False
+    filter_thinking: bool = False
+    internal_tools: frozenset = frozenset()
 
 
 def _fmt_tool_call(
@@ -89,6 +91,9 @@ class MessageRenderer:
         msg_type = getattr(message, "type", None)
         content = getattr(message, "content", None) or []
         s = self.style
+
+        if s.filter_thinking and msg_type == MessageType.REASONING:
+            return []
 
         logger.debug(
             "renderer message_to_parts: msg_type=%s content_len=%s",
@@ -154,7 +159,8 @@ class MessageRenderer:
                                 ),
                             )
                 if btype == "thinking" and b.get("thinking"):
-                    result.append(TextContent(text=b["thinking"]))
+                    if not s.filter_thinking:
+                        result.append(TextContent(text=b["thinking"]))
             return result
 
         def _parts_for_tool_output(content_list: list) -> List[_OutgoingPart]:
@@ -187,11 +193,17 @@ class MessageRenderer:
                             ContentType.VIDEO,
                             ContentType.FILE,
                         )
-                        media_parts = [
-                            p
-                            for p in block_parts
-                            if getattr(p, "type", None) in media_types
-                        ]
+                        # Internal tools (e.g. view_image/view_video) produce
+                        # media for the LLM, not the user — skip.
+                        media_parts = (
+                            []
+                            if name in s.internal_tools
+                            else [
+                                p
+                                for p in block_parts
+                                if getattr(p, "type", None) in media_types
+                            ]
+                        )
                         out.extend(media_parts)
                         if not media_parts:
                             out.append(
@@ -249,7 +261,35 @@ class MessageRenderer:
             MessageType.MCP_TOOL_CALL_OUTPUT,
         ):
             if s.filter_tool_messages:
-                return []
+                media_types = (
+                    ContentType.IMAGE,
+                    ContentType.AUDIO,
+                    ContentType.VIDEO,
+                    ContentType.FILE,
+                )
+                media_parts = []
+                for c in content:
+                    if getattr(c, "type", None) != ContentType.DATA:
+                        continue
+                    data = getattr(c, "data", None) or {}
+                    name = data.get("name") or "tool"
+                    if name in s.internal_tools:
+                        continue
+                    output = data.get("output", "")
+                    try:
+                        output = json.loads(output)
+                    except json.JSONDecodeError:
+                        pass
+                    if isinstance(output, list):
+                        block_parts = _blocks_to_parts(output)
+                        media_parts.extend(
+                            [
+                                p
+                                for p in block_parts
+                                if getattr(p, "type", None) in media_types
+                            ],
+                        )
+                return media_parts
             parts = _parts_for_tool_output(content)
             if not parts:
                 parts = [TextContent(text=f"[{msg_type}]")]
@@ -324,7 +364,7 @@ class MessageRenderer:
                 text_parts.append(p.refusal or "")
         body = "\n".join(text_parts) if text_parts else ""
         if prefix and body:
-            body = prefix + body
+            body = prefix + "  " + body
         for p in parts:
             t = getattr(p, "type", None)
             if t == ContentType.IMAGE and getattr(p, "image_url", None):

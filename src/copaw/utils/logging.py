@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Logging setup for CoPaw: console output and optional file handler."""
+import io
 import logging
 import logging.handlers
 import os
@@ -110,17 +111,28 @@ def setup_logger(level: int | str = logging.INFO):
 
     formatter = ColorFormatter(log_format, datefmt)
 
-    # Suppress third-party: root has no handler and high level.
+    # Suppress third-party: set root logger level and configure handlers.
     root = logging.getLogger()
-    root.setLevel(logging.WARNING)
-    root.handlers.clear()
+    for handler in root.handlers:
+        if isinstance(
+            handler,
+            (logging.FileHandler, logging.handlers.RotatingFileHandler),
+        ):
+            handler.setLevel(logging.INFO)
+        else:
+            handler.setLevel(logging.WARNING)
 
     # Only attach handler to our namespace so only copaw.* logs are printed.
     logger = logging.getLogger(LOG_NAMESPACE)
     logger.setLevel(level)
     logger.propagate = False
     if not logger.handlers:
-        handler = logging.StreamHandler()
+        utf8_stderr = io.TextIOWrapper(
+            sys.stderr.buffer,
+            encoding="utf-8",
+            errors="replace",
+        )
+        handler = logging.StreamHandler(utf8_stderr)
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
@@ -128,7 +140,10 @@ def setup_logger(level: int | str = logging.INFO):
 
 
 def add_copaw_file_handler(log_path: Path) -> None:
-    """Add a RotatingFileHandler to the copaw logger for /daemon logs.
+    """Add a file handler to the copaw logger for daemon logs.
+
+    Windows/Linux: Uses simple FileHandler to avoid file locking issues.
+    macOS: Uses RotatingFileHandler with automatic log rotation.
 
     Idempotent: if the logger already has a file handler for the same path,
     no new handler is added (avoids duplicate lines and leaked descriptors
@@ -144,12 +159,25 @@ def add_copaw_file_handler(log_path: Path) -> None:
         base = getattr(handler, "baseFilename", None)
         if base is not None and Path(base).resolve() == log_path:
             return
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_path,
-        encoding="utf-8",
-        maxBytes=_COPAW_LOG_MAX_BYTES,
-        backupCount=_COPAW_LOG_BACKUP_COUNT,
-    )
+
+    is_windows_or_linux = platform.system() in ("Windows", "Linux")
+    if is_windows_or_linux:
+        file_handler = logging.FileHandler(
+            log_path,
+            encoding="utf-8",
+            mode="a",
+        )
+    else:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_path,
+            encoding="utf-8",
+            maxBytes=_COPAW_LOG_MAX_BYTES,
+            backupCount=_COPAW_LOG_BACKUP_COUNT,
+        )
+
+    if platform.system() == "Windows":
+        file_handler.setLevel(logging.INFO)
+
     file_handler.setFormatter(
         logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"),
     )

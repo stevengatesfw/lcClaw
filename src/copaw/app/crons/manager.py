@@ -4,8 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Union
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -15,12 +15,18 @@ from ...config.utils import (
     get_config_path_for_user,
     get_heartbeat_config,
     get_heartbeat_config_from_path,
+    get_heartbeat_query_path_for_user,
     iter_user_config_paths,
 )
 
 from ..console_push_store import append as push_store_append
 from .executor import CronExecutor
-from .heartbeat import parse_heartbeat_every, run_heartbeat_once
+from .heartbeat import (
+    is_cron_expression,
+    parse_heartbeat_cron,
+    parse_heartbeat_every,
+    run_heartbeat_once,
+)
 from .models import CronJobSpec, CronJobState
 from .repo.base import BaseJobRepository
 
@@ -50,13 +56,15 @@ class CronManager:
         repo: BaseJobRepository,
         runner: Any,
         channel_manager: Any,
-        timezone: str = "UTC",
+        timezone: str = "UTC",  # pylint: disable=redefined-outer-name
         storage_isolation_enabled: bool = False,
+        agent_id: Optional[str] = None,
     ):
         self._repo = repo
         self._runner = runner
         self._channel_manager = channel_manager
         self._storage_isolation = storage_isolation_enabled
+        self._agent_id = agent_id
         self._scheduler = AsyncIOScheduler(timezone=timezone)
         self._executor = CronExecutor(
             runner=runner,
@@ -76,20 +84,46 @@ class CronManager:
 
             self._scheduler.start()
             for job in jobs_file.jobs:
-                await self._register_or_update(job)
+                try:
+                    await self._register_or_update(job)
+                except Exception as e:  # pylint: disable=broad-except
+                    logger.warning(
+                        "Skipping invalid cron job during startup: "
+                        "job_id=%s name=%s cron=%s error=%s",
+                        job.id,
+                        job.name,
+                        job.schedule.cron,
+                        repr(e),
+                    )
+                    if job.enabled:
+                        disabled_job = job.model_copy(
+                            update={"enabled": False},
+                        )
+                        await self._repo.upsert_job(disabled_job)
+                        logger.warning(
+                            "Auto-disabled invalid cron job: "
+                            "job_id=%s name=%s",
+                            job.id,
+                            job.name,
+                        )
 
-            # Heartbeat: global (legacy) or per-user (storage isolation)
+            # Heartbeat: per-user (storage isolation) or agent-scoped job
             if self._storage_isolation:
                 await self._register_all_user_heartbeats()
             else:
-                hb = get_heartbeat_config()
-                if getattr(hb, "enabled", True):
-                    interval_seconds = parse_heartbeat_every(hb.every)
+                hb = get_heartbeat_config(self._agent_id)
+                if getattr(hb, "enabled", False):
+                    trigger = self._build_heartbeat_trigger(hb.every)
                     self._scheduler.add_job(
                         self._heartbeat_callback,
-                        trigger=IntervalTrigger(seconds=interval_seconds),
+                        trigger=trigger,
                         id=HEARTBEAT_JOB_ID,
                         replace_existing=True,
+                    )
+                    logger.info(
+                        "Heartbeat job scheduled for agent %s: every=%s",
+                        self._agent_id,
+                        hb.every,
                     )
 
             self._started = True
@@ -137,29 +171,40 @@ class CronManager:
             self._scheduler.resume_job(job_id)
 
     async def reschedule_heartbeat(self) -> None:
-        """Reload heartbeat config and update or remove the heartbeat job."""
+        """Reload heartbeat config and update or remove the heartbeat job.
+
+        Note: CronManager should always be started during workspace
+        initialization, so this method assumes self._started is True.
+        """
         async with self._lock:
             if not self._started:
+                logger.warning(
+                    f"CronManager not started for agent {self._agent_id}, "
+                    f"cannot reschedule heartbeat. This should not happen.",
+                )
                 return
             if self._storage_isolation:
                 await self._register_all_user_heartbeats()
                 logger.info("user heartbeats rescheduled (storage isolation)")
                 return
-            hb = get_heartbeat_config()
+
+            hb = get_heartbeat_config(self._agent_id)
+
             if self._scheduler.get_job(HEARTBEAT_JOB_ID):
                 self._scheduler.remove_job(HEARTBEAT_JOB_ID)
-            if getattr(hb, "enabled", True):
-                interval_seconds = parse_heartbeat_every(hb.every)
+
+            # Add heartbeat job if enabled
+            if getattr(hb, "enabled", False):
+                trigger = self._build_heartbeat_trigger(hb.every)
                 self._scheduler.add_job(
                     self._heartbeat_callback,
-                    trigger=IntervalTrigger(seconds=interval_seconds),
+                    trigger=trigger,
                     id=HEARTBEAT_JOB_ID,
                     replace_existing=True,
                 )
                 logger.info(
-                    "heartbeat rescheduled: every=%s (interval=%ss)",
+                    "heartbeat rescheduled: every=%s",
                     hb.every,
-                    interval_seconds,
                 )
             else:
                 logger.info("heartbeat disabled, job removed")
@@ -199,6 +244,9 @@ class CronManager:
                     runner=self._runner,
                     channel_manager=self._channel_manager,
                     config_path=get_config_path_for_user(user_id),
+                    heartbeat_query_path=get_heartbeat_query_path_for_user(
+                        user_id,
+                    ),
                     heartbeat_user_id=user_id,
                 )
             except Exception:  # pylint: disable=broad-except
@@ -277,12 +325,14 @@ class CronManager:
     # ----- internal -----
 
     async def _register_or_update(self, spec: CronJobSpec) -> None:
+        # Validate and build trigger first. If cron is invalid, fail fast
+        # without mutating scheduler/runtime state.
+        trigger = self._build_trigger(spec)
+
         # per-job concurrency semaphore
         self._rt[spec.id] = _Runtime(
             sem=asyncio.Semaphore(spec.runtime.max_concurrency),
         )
-
-        trigger = self._build_trigger(spec)
 
         # replace existing
         if self._scheduler.get_job(spec.id):
@@ -325,6 +375,27 @@ class CronManager:
             timezone=spec.schedule.timezone,
         )
 
+    def _build_heartbeat_trigger(
+        self,
+        every: str,
+    ) -> Union[CronTrigger, IntervalTrigger]:
+        """Build a trigger from the heartbeat *every* value.
+
+        Returns CronTrigger for cron expressions,
+        IntervalTrigger for interval strings.
+        """
+        if is_cron_expression(every):
+            minute, hour, day, month, day_of_week = parse_heartbeat_cron(every)
+            return CronTrigger(
+                minute=minute,
+                hour=hour,
+                day=day,
+                month=month,
+                day_of_week=day_of_week,
+            )
+        interval_seconds = parse_heartbeat_every(every)
+        return IntervalTrigger(seconds=interval_seconds)
+
     async def _scheduled_callback(self, job_id: str) -> None:
         job = await self._repo.get_job(job_id)
         if not job:
@@ -341,10 +412,20 @@ class CronManager:
     async def _heartbeat_callback(self) -> None:
         """Run one heartbeat (HEARTBEAT.md as query, optional dispatch)."""
         try:
+            # Get workspace_dir from runner if available
+            workspace_dir = None
+            if hasattr(self._runner, "workspace_dir"):
+                workspace_dir = self._runner.workspace_dir
+
             await run_heartbeat_once(
                 runner=self._runner,
                 channel_manager=self._channel_manager,
+                agent_id=self._agent_id,
+                workspace_dir=workspace_dir,
             )
+        except asyncio.CancelledError:
+            logger.info("heartbeat cancelled")
+            raise
         except Exception:  # pylint: disable=broad-except
             logger.exception("heartbeat run failed")
 
@@ -367,6 +448,14 @@ class CronManager:
                     "cron _execute_once: job_id=%s status=success",
                     job.id,
                 )
+            except asyncio.CancelledError:
+                st.last_status = "cancelled"
+                st.last_error = "Job was cancelled"
+                logger.info(
+                    "cron _execute_once: job_id=%s status=cancelled",
+                    job.id,
+                )
+                raise
             except Exception as e:  # pylint: disable=broad-except
                 st.last_status = "error"
                 st.last_error = repr(e)
@@ -377,5 +466,5 @@ class CronManager:
                 )
                 raise
             finally:
-                st.last_run_at = datetime.utcnow()
+                st.last_run_at = datetime.now(timezone.utc)
                 self._states[job.id] = st
