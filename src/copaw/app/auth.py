@@ -133,6 +133,9 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
 
     When LAZY_PLATFORM_KEY is set, overrides user_id in the request body
     with the value from the JWT. Requires valid token when isolation enabled.
+
+    Always parses JSON to expose ``meta`` (e.g. lcagent_resolved_llm) via
+    :func:`copaw.context.get_process_request_meta` for the runner.
     """
 
     async def dispatch(self, request, call_next):
@@ -143,6 +146,23 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         ):
             return await call_next(request)
 
+        from ..context import (
+            reset_process_request_meta,
+            reset_request_authorization,
+            set_process_request_meta,
+            set_request_authorization,
+        )
+
+        try:
+            body = await request.body()
+            data = json.loads(body) if body else {}
+        except (json.JSONDecodeError, ValueError):
+            return await call_next(request)
+
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        set_process_request_meta(meta)
+        set_request_authorization(request.headers.get("Authorization") or "")
+
         key = _get_platform_key()
         has_auth = bool((request.headers.get("Authorization") or "").strip())
         if not key:
@@ -150,13 +170,19 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
                 "agent/process: LAZY_PLATFORM_KEY not set, skip JWT inject (has_auth=%s)",
                 has_auth,
             )
-            return await call_next(request)
 
-        try:
-            body = await request.body()
-            data = json.loads(body) if body else {}
-        except (json.JSONDecodeError, ValueError):
-            return await call_next(request)
+            async def receive_no_key():
+                return {
+                    "type": "http.request",
+                    "body": body,
+                }
+
+            request = Request(request.scope, receive=receive_no_key)
+            try:
+                return await call_next(request)
+            finally:
+                reset_process_request_meta()
+                reset_request_authorization()
 
         user_id = verify_lcagent_token(request.headers.get("Authorization", ""))
         logger.info(
@@ -168,6 +194,8 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         if not user_id:
             from fastapi.responses import JSONResponse
 
+            reset_process_request_meta()
+            reset_request_authorization()
             return JSONResponse(
                 status_code=401,
                 content={"detail": "请先登录 LCAgent 后再使用 CoPaw。"},
@@ -181,7 +209,11 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
             }
 
         request = Request(request.scope, receive=receive)
-        return await call_next(request)
+        try:
+            return await call_next(request)
+        finally:
+            reset_process_request_meta()
+            reset_request_authorization()
 
 
 # Log at module load so kubectl logs show whether key is present in uvicorn process

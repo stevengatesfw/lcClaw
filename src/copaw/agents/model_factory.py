@@ -273,8 +273,11 @@ def _create_model_instance(
         # Local models use OpenAIChatModel-compatible formatter
         return model, OpenAIChatModel
 
-    # Handle remote models - determine chat_model_class from provider config
-    chat_model_class = _get_chat_model_class_from_provider()
+    # Handle remote models - LCAgent meta override or provider config
+    if llm_cfg and getattr(llm_cfg, "chat_model_name", None):
+        chat_model_class = get_chat_model_class(llm_cfg.chat_model_name)
+    else:
+        chat_model_class = _get_chat_model_class_from_provider()
 
     # Create remote model instance with configuration
     model = _create_remote_model_instance(llm_cfg, chat_model_class)

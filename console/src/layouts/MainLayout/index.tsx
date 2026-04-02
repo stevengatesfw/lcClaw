@@ -1,6 +1,6 @@
 import { Layout } from "antd";
 import { useEffect } from "react";
-import { Routes, Route, useLocation, useNavigate } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import Sidebar from "../Sidebar";
 import Header from "../Header";
 import ConsoleCronBubble from "../../components/ConsoleCronBubble";
@@ -13,7 +13,6 @@ import AgentConfigPage from "../../pages/Agent/Config";
 import SkillsPage from "../../pages/Agent/Skills";
 import WorkspacePage from "../../pages/Agent/Workspace";
 import MCPPage from "../../pages/Agent/MCP";
-import ModelsPage from "../../pages/Settings/Models";
 import EnvironmentsPage from "../../pages/Settings/Environments";
 
 const { Content } = Layout;
@@ -28,7 +27,6 @@ const pathToKey: Record<string, string> = {
   "/mcp": "mcp",
   "/workspace": "workspace",
   "/agents": "agents",
-  "/models": "models",
   "/environments": "environments",
   "/agent-config": "agent-config",
 };
@@ -37,6 +35,9 @@ export default function MainLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const currentPath = location.pathname;
+  const embedChatOnly =
+    typeof window !== "undefined" &&
+    new URLSearchParams(location.search).get("embed") === "chat";
   const selectedKey = pathToKey[currentPath] || "chat";
 
   useEffect(() => {
@@ -47,24 +48,51 @@ export default function MainLayout() {
 
   return (
     <Layout style={{ height: "100vh" }}>
-      <Sidebar selectedKey={selectedKey} />
+      {!embedChatOnly && <Sidebar selectedKey={selectedKey} />}
       <Layout>
-        <Header selectedKey={selectedKey} />
+        {!embedChatOnly && <Header selectedKey={selectedKey} />}
         <Content className="page-container">
           <ConsoleCronBubble />
           <div className="page-content">
             <Routes>
               <Route path="/chat" element={<Chat />} />
-              <Route path="/channels" element={<ChannelsPage />} />
-              <Route path="/sessions" element={<SessionsPage />} />
-              <Route path="/cron-jobs" element={<CronJobsPage />} />
-              <Route path="/heartbeat" element={<HeartbeatPage />} />
-              <Route path="/skills" element={<SkillsPage />} />
-              <Route path="/mcp" element={<MCPPage />} />
-              <Route path="/workspace" element={<WorkspacePage />} />
-              <Route path="/models" element={<ModelsPage />} />
-              <Route path="/environments" element={<EnvironmentsPage />} />
-              <Route path="/agent-config" element={<AgentConfigPage />} />
+              <Route
+                path="/channels"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <ChannelsPage />}
+              />
+              <Route
+                path="/sessions"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <SessionsPage />}
+              />
+              <Route
+                path="/cron-jobs"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <CronJobsPage />}
+              />
+              <Route
+                path="/heartbeat"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <HeartbeatPage />}
+              />
+              <Route
+                path="/skills"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <SkillsPage />}
+              />
+              <Route
+                path="/mcp"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <MCPPage />}
+              />
+              <Route
+                path="/workspace"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <WorkspacePage />}
+              />
+              <Route
+                path="/environments"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <EnvironmentsPage />}
+              />
+              <Route
+                path="/agent-config"
+                element={embedChatOnly ? <Navigate to="/chat" replace /> : <AgentConfigPage />}
+              />
+              <Route path="/models" element={<Navigate to="/chat" replace />} />
               <Route path="/" element={<Chat />} />
             </Routes>
           </div>

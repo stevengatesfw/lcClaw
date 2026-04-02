@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -149,3 +149,7 @@ class ResolvedModelConfig(BaseModel):
     base_url: str = Field(default="")
     api_key: str = Field(default="")
     is_local: bool = Field(default=False)
+    chat_model_name: Optional[str] = Field(
+        default=None,
+        description="When set, use this chat model class name (e.g. OpenAIChatModel).",
+    )

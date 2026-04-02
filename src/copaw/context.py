@@ -6,7 +6,7 @@ directory) to tools and other components that don't receive it directly.
 """
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from .config.utils import get_user_working_dir
 
@@ -21,6 +21,18 @@ _current_user_id: ContextVar[Optional[str]] = ContextVar(
 # Set by runner at start of query_handler, read by file tools and prompt builder.
 _current_working_dir: ContextVar[Optional[Path]] = ContextVar(
     "current_working_dir",
+    default=None,
+)
+
+# POST /api/agent/process JSON ``meta`` (set by auth middleware for runner).
+_process_request_meta: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "process_request_meta",
+    default=None,
+)
+
+# Raw Authorization header from the upstream agent/process POST (for LCAgent HTTP callbacks).
+_request_authorization: ContextVar[Optional[str]] = ContextVar(
+    "request_authorization",
     default=None,
 )
 
@@ -48,6 +60,38 @@ def reset_current_user_id() -> None:
 def get_context_user_id() -> Optional[str]:
     """Get the user_id for the current request (from context, set by auth middleware)."""
     return _current_user_id.get()
+
+
+def set_process_request_meta(meta: Optional[Dict[str, Any]]) -> None:
+    """Store ``meta`` from agent/process JSON for the current request."""
+    _process_request_meta.set(meta)
+
+
+def get_process_request_meta() -> Dict[str, Any]:
+    """Return agent/process ``meta`` dict (empty if unset)."""
+    m = _process_request_meta.get()
+    return m if isinstance(m, dict) else {}
+
+
+def reset_process_request_meta() -> None:
+    """Clear process meta context."""
+    _process_request_meta.set(None)
+
+
+def set_request_authorization(value: Optional[str]) -> None:
+    """Store Authorization header for the current agent/process request."""
+    _request_authorization.set(value)
+
+
+def get_request_authorization() -> str:
+    """Return Authorization header value (empty if unset)."""
+    v = _request_authorization.get()
+    return v if isinstance(v, str) else ""
+
+
+def reset_request_authorization() -> None:
+    """Clear Authorization context."""
+    _request_authorization.set(None)
 
 
 def get_current_working_dir() -> Path:

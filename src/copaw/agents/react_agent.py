@@ -37,9 +37,11 @@ from .tools import (
     write_file,
     create_memory_search_tool,
 )
+from .tools.lcagent_app import invoke_lcagent_published_app
 from .utils import process_file_and_media_blocks_in_message
 from ..agents.memory import MemoryManager
 from ..config import load_config
+from ..providers.models import ResolvedModelConfig
 from ..context import get_current_working_dir
 from ..constant import (
     MEMORY_COMPACT_KEEP_RECENT,
@@ -83,6 +85,9 @@ class CoPawAgent(ReActAgent):
         max_iters: int = 50,
         max_input_length: int = 128 * 1024,  # 128K = 131072 tokens
         namesake_strategy: NamesakeStrategy = "skip",
+        llm_cfg: Optional[ResolvedModelConfig] = None,
+        enable_agent_mode: bool = True,
+        enable_skills: bool = True,
     ):
         """Initialize CoPawAgent.
 
@@ -105,6 +110,8 @@ class CoPawAgent(ReActAgent):
         self._max_input_length = max_input_length
         self._mcp_clients = mcp_clients or []
         self._namesake_strategy = namesake_strategy
+        self._enable_agent_mode = bool(enable_agent_mode)
+        self._enable_skills = bool(enable_skills and self._enable_agent_mode)
 
         # Memory compaction threshold: configurable ratio of max_input_length
         self._memory_compact_threshold = int(
@@ -112,16 +119,26 @@ class CoPawAgent(ReActAgent):
         )
 
         # Initialize toolkit with built-in tools
-        toolkit = self._create_toolkit(namesake_strategy=namesake_strategy)
+        toolkit = self._create_toolkit(
+            namesake_strategy=namesake_strategy,
+            enable_agent_mode=self._enable_agent_mode,
+        )
 
         # Load and register skills
-        self._register_skills(toolkit)
+        if self._enable_skills:
+            self._register_skills(toolkit)
+
+        logger.info(
+            "CoPawAgent feature flags: enable_agent_mode=%s enable_skills=%s",
+            self._enable_agent_mode,
+            self._enable_skills,
+        )
 
         # Build system prompt
         sys_prompt = self._build_sys_prompt()
 
         # Create model and formatter using factory method
-        model, formatter = create_model_and_formatter()
+        model, formatter = create_model_and_formatter(llm_cfg)
 
         # Initialize parent ReActAgent
         super().__init__(
@@ -155,6 +172,7 @@ class CoPawAgent(ReActAgent):
     def _create_toolkit(
         self,
         namesake_strategy: NamesakeStrategy = "skip",
+        enable_agent_mode: bool = True,
     ) -> Toolkit:
         """Create and populate toolkit with built-in tools.
 
@@ -167,6 +185,10 @@ class CoPawAgent(ReActAgent):
             Configured toolkit instance
         """
         toolkit = Toolkit()
+
+        # If agent-mode is disabled, keep an empty toolkit so the model answers directly.
+        if not enable_agent_mode:
+            return toolkit
 
         # Register built-in tools
         toolkit.register_tool_function(
@@ -199,6 +221,10 @@ class CoPawAgent(ReActAgent):
         )
         toolkit.register_tool_function(
             get_current_time,
+            namesake_strategy=namesake_strategy,
+        )
+        toolkit.register_tool_function(
+            invoke_lcagent_published_app,
             namesake_strategy=namesake_strategy,
         )
 

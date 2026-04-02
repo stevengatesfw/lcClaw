@@ -1,7 +1,9 @@
 import { createGlobalStyle } from "antd-style";
-import { ConfigProvider, bailianTheme } from "@agentscope-ai/design";
+import { ConfigProvider } from "antd";
+import zhCN from "antd/es/locale/zh_CN";
 import { BrowserRouter } from "react-router-dom";
 import MainLayout from "./layouts/MainLayout";
+import { lcagentAntdTheme } from "./theme/lcagentTheme";
 import "./styles/layout.css";
 import "./styles/form-override.css";
 
@@ -23,7 +25,7 @@ function App() {
   return (
     <BrowserRouter basename={basename}>
       <GlobalStyle />
-      <ConfigProvider {...bailianTheme} prefix="copaw" prefixCls="copaw">
+      <ConfigProvider locale={zhCN} theme={lcagentAntdTheme}>
         <MainLayout />
       </ConfigProvider>
     </BrowserRouter>

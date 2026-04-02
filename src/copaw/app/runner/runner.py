@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 
 from agentscope.pipeline import stream_printing_messages
 from agentscope.tool import Toolkit
@@ -23,6 +24,8 @@ from ..channels.schema import DEFAULT_CHANNEL
 from ...agents.memory import MemoryManager
 from ...agents.model_factory import create_model_and_formatter
 from ...agents.react_agent import CoPawAgent
+from ...context import get_process_request_meta
+from ...providers.models import ResolvedModelConfig
 from ...agents.tools import read_file, write_file, edit_file
 from ...agents.utils.token_counting import _get_token_counter
 from ...config import load_config
@@ -39,6 +42,47 @@ from ...constant import MEMORY_COMPACT_RATIO, WORKING_DIR
 logger = logging.getLogger(__name__)
 
 
+def _llm_cfg_from_process_meta() -> Optional[ResolvedModelConfig]:
+    """Build ResolvedModelConfig from agent/process JSON meta (LCAgent proxy)."""
+    meta = get_process_request_meta()
+    raw = meta.get("lcagent_resolved_llm")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ResolvedModelConfig.model_validate(raw)
+    except Exception:
+        logger.warning("Invalid lcagent_resolved_llm in meta", exc_info=True)
+        return None
+
+
+def _meta_bool(value, default: bool = False) -> bool:
+    """Parse bool-like values from request meta."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
+
+def _feature_flags_from_process_meta() -> tuple[bool, bool]:
+    """Read lcagent feature switches from agent/process meta.
+
+    Returns:
+        tuple[bool, bool]: (enable_agent, enable_skills)
+    """
+    meta = get_process_request_meta()
+    enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=False)
+    enable_skills = _meta_bool(meta.get("lcagent_enable_skills"), default=False)
+    # Skills must be used under agent-mode execution.
+    if not enable_agent:
+        enable_skills = False
+    return enable_agent, enable_skills
+
+
 class AgentRunner(Runner):
     def __init__(self) -> None:
         super().__init__()
@@ -48,7 +92,22 @@ class AgentRunner(Runner):
         self._mcp_manager = None  # root MCP when not storage-isolated
         self._mcp_managers_cache: dict[str, MCPClientManager] = {}
         self._mcp_managers_cache_lock = asyncio.Lock()
-        self._memory_manager_cache: dict[str, MemoryManager] = {}
+        self._memory_manager_cache: dict[tuple, MemoryManager] = {}
+        self._request_llm_cfg_override: Optional[ResolvedModelConfig] = None
+
+    def _memory_manager_cache_key(self, user_id: str | None) -> tuple:
+        """Include LCAgent llm override in key so cache matches active home model."""
+        uid = user_id or "default"
+        o = self._request_llm_cfg_override
+        if o is None:
+            return (uid, "default")
+        return (
+            uid,
+            "lcagent",
+            o.model,
+            o.base_url,
+            (o.api_key or "")[:16],
+        )
 
     def set_chat_manager(self, chat_manager_or_factory):
         """Set chat manager for auto-registration.
@@ -75,14 +134,15 @@ class AgentRunner(Runner):
         Lazy-creates and caches MemoryManager per user. Each instance uses
         users/<user_id> as working_dir when isolation is enabled.
         """
-        cache_key = user_id or "default"
+        cache_key = self._memory_manager_cache_key(user_id)
         if cache_key in self._memory_manager_cache:
             return self._memory_manager_cache[cache_key]
         try:
             cfg_path = get_effective_config_path_for_runner(user_id)
             config = load_config(cfg_path)
             max_input_length = config.agents.running.max_input_length
-            chat_model, formatter = create_model_and_formatter()
+            llm_cfg = self._request_llm_cfg_override
+            chat_model, formatter = create_model_and_formatter(llm_cfg)
             token_counter = _get_token_counter()
             toolkit = Toolkit()
             toolkit.register_tool_function(read_file)
@@ -187,6 +247,8 @@ class AgentRunner(Runner):
         mgr = None
         session_state_loaded = False
         try:
+            self._request_llm_cfg_override = _llm_cfg_from_process_meta()
+            enable_agent, enable_skills = _feature_flags_from_process_meta()
             session_id = request.session_id
             # Prefer JWT context (set by UserIdContextMiddleware) over body; body may not be updated by middleware in some stacks
             user_id = get_context_user_id() or getattr(request, "user_id", None)
@@ -199,6 +261,8 @@ class AgentRunner(Runner):
                         "session_id": session_id,
                         "user_id": user_id,
                         "channel": channel,
+                        "enable_agent": enable_agent,
+                        "enable_skills": enable_skills,
                         "msgs_len": len(msgs) if msgs else 0,
                         "msgs_str": str(msgs)[:300] + "...",
                     },
@@ -215,6 +279,24 @@ class AgentRunner(Runner):
                 channel=channel,
                 working_dir=str(user_working_dir),
             )
+            env_context += (
+                "\n- LCAgent 功能开关:\n"
+                f"  - enable_agent: {enable_agent}\n"
+                f"  - enable_skills: {enable_skills}\n"
+            )
+            proc_meta = get_process_request_meta()
+            pub_app = proc_meta.get("lcagent_published_app_id")
+            if enable_agent and pub_app:
+                env_context += (
+                    "\n- LCAgent 默认已发布应用 ID（工具 invoke_lcagent_published_app 可将 app_id 留空以使用该值）: "
+                    f"{pub_app}\n"
+                )
+            elif enable_agent:
+                env_context += (
+                    "\n- 提示：未选择 lcClaw 顶栏「默认应用」，meta 中无 lcagent_published_app_id。"
+                    "调用 LCAgent 已发布 **工作流应用** 时，请使用工具 invoke_lcagent_published_app，"
+                    "并在参数 app_id 中传入应用 UUID；或请用户先在顶栏选择默认应用后再试。\n"
+                )
 
             mcp_clients = await self._get_mcp_clients_for_user(user_id)
 
@@ -231,6 +313,9 @@ class AgentRunner(Runner):
                 memory_manager=memory_manager,
                 max_iters=max_iters,
                 max_input_length=max_input_length,
+                llm_cfg=self._request_llm_cfg_override,
+                enable_agent_mode=enable_agent,
+                enable_skills=enable_skills,
             )
             await agent.register_mcp_clients()
             agent.set_console_output_enabled(enabled=False)
@@ -308,6 +393,7 @@ class AgentRunner(Runner):
                 ) + e.args[1:]
             raise
         finally:
+            self._request_llm_cfg_override = None
             reset_current_working_dir()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(

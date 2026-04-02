@@ -14,7 +14,6 @@ const keyToLabel: Record<string, string> = {
   mcp: "nav.mcp",
   "agent-config": "nav.agentConfig",
   workspace: "nav.workspace",
-  models: "nav.models",
   environments: "nav.environments",
 };
 
@@ -33,8 +32,8 @@ export default function Header({ selectedKey }: HeaderProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        background: "#fff",
-        borderBottom: "1px solid #f0f0f0",
+        background: "#F5F6F7",
+        borderBottom: "1px solid #e4eaf3",
       }}
     >
       <span style={{ fontSize: 18, fontWeight: 500 }}>

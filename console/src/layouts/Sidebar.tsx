@@ -15,7 +15,6 @@ import {
   Sparkles,
   Briefcase,
   Cpu,
-  Box,
   Globe,
   Settings,
   Plug,
@@ -34,7 +33,6 @@ const keyToPath: Record<string, string> = {
   skills: "/skills",
   mcp: "/mcp",
   workspace: "/workspace",
-  models: "/models",
   environments: "/environments",
   "agent-config": "/agent-config",
 };
@@ -146,11 +144,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       icon: <Cpu size={16} />,
       children: [
         {
-          key: "models",
-          label: t("nav.models"),
-          icon: <Box size={16} />,
-        },
-        {
           key: "environments",
           label: t("nav.environments"),
           icon: <Globe size={16} />,
@@ -165,8 +158,8 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       onCollapse={(value) => setCollapsed(value)}
       width={260}
       style={{
-        background: "#fff",
-        borderRight: "1px solid #f0f0f0",
+        background: "#F5F6F7",
+        borderRight: "1px solid #e4eaf3",
         overflow: "auto",
         height: "100vh",
       }}
@@ -209,7 +202,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           onClick={() => setCollapsed(!collapsed)}
           style={{
             margin: "auto",
-            color: "#615ced",
+            color: "#0E5DD8",
           }}
         />
       </div>
