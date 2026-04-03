@@ -130,7 +130,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         self._mcp_clients = mcp_clients or []
         self._namesake_strategy = namesake_strategy
         self._enable_agent_mode = bool(enable_agent_mode)
-        self._enable_skills = bool(enable_skills and self._enable_agent_mode)
+        self._enable_skills = bool(enable_skills)
         self._workspace_dir = workspace_dir
         self._task_tracker = task_tracker
 
@@ -225,10 +225,6 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         """
         toolkit = Toolkit()
 
-        # LCAgent: direct mode — no tools unless enabled via meta elsewhere
-        if not enable_agent_mode:
-            return toolkit
-
         # Check which tools are enabled from agent config
         enabled_tools = {}
         async_execution_tools = {}
@@ -281,6 +277,15 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             # If tool not in config, enable by default (backward compatibility)
             if not enabled_tools.get(tool_name, True):
                 logger.debug("Skipped disabled tool: %s", tool_name)
+                continue
+
+            if (
+                tool_name == "invoke_lcagent_published_app"
+                and not enable_agent_mode
+            ):
+                logger.debug(
+                    "Skipped published-app tool because agent capability is disabled",
+                )
                 continue
 
             if tool_name in ("view_image", "view_video") and not multimodal:

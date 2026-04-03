@@ -747,11 +747,7 @@ html.dark-mode [class*="chat-anywhere"] [class*="message"] a {
   min-height: 100vh;
   max-height: 100vh;
   overflow: hidden;
-<<<<<<< HEAD
-  background: #f5f6f7 !important;
-=======
   background: #f9f8f4;
->>>>>>> upstream/main
 }
 
 .ant-layout-content {

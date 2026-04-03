@@ -508,8 +508,10 @@ async def put_user_timezone(
     response_model=ToolGuardConfig,
     summary="Get tool guard settings",
 )
-async def get_tool_guard() -> ToolGuardConfig:
-    config = load_config()
+async def get_tool_guard(
+    config_path: Path = Depends(get_storage_config_path),
+) -> ToolGuardConfig:
+    config = load_config(config_path)
     return config.security.tool_guard
 
 
@@ -520,10 +522,11 @@ async def get_tool_guard() -> ToolGuardConfig:
 )
 async def put_tool_guard(
     body: ToolGuardConfig = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> ToolGuardConfig:
-    config = load_config()
+    config = load_config(config_path)
     config.security.tool_guard = body
-    save_config(config)
+    save_config(config, config_path)
 
     from ...security.tool_guard.engine import get_guard_engine
 
@@ -579,8 +582,10 @@ class FileGuardUpdateBody(BaseModel):
     response_model=FileGuardResponse,
     summary="Get file guard settings",
 )
-async def get_file_guard() -> FileGuardResponse:
-    config = load_config()
+async def get_file_guard(
+    config_path: Path = Depends(get_storage_config_path),
+) -> FileGuardResponse:
+    config = load_config(config_path)
     fg = config.security.file_guard
     paths = fg.sensitive_files
     if not paths:
@@ -599,8 +604,9 @@ async def get_file_guard() -> FileGuardResponse:
 )
 async def put_file_guard(
     body: FileGuardUpdateBody,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> FileGuardResponse:
-    config = load_config()
+    config = load_config(config_path)
     fg = config.security.file_guard
 
     if body.enabled is not None:
@@ -608,7 +614,7 @@ async def put_file_guard(
     if body.paths is not None:
         fg.sensitive_files = body.paths
 
-    save_config(config)
+    save_config(config, config_path)
 
     from ...security.tool_guard.engine import get_guard_engine
 
@@ -629,8 +635,10 @@ async def put_file_guard(
     response_model=SkillScannerConfig,
     summary="Get skill scanner settings",
 )
-async def get_skill_scanner() -> SkillScannerConfig:
-    config = load_config()
+async def get_skill_scanner(
+    config_path: Path = Depends(get_storage_config_path),
+) -> SkillScannerConfig:
+    config = load_config(config_path)
     return config.security.skill_scanner
 
 
@@ -641,10 +649,11 @@ async def get_skill_scanner() -> SkillScannerConfig:
 )
 async def put_skill_scanner(
     body: SkillScannerConfig = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> SkillScannerConfig:
-    config = load_config()
+    config = load_config(config_path)
     config.security.skill_scanner = body
-    save_config(config)
+    save_config(config, config_path)
     return body
 
 
@@ -675,7 +684,7 @@ async def delete_blocked_history() -> dict:
     summary="Remove a single blocked history entry",
 )
 async def delete_blocked_entry(
-    index: int = Path(..., ge=0),
+    index: int = PathParam(..., ge=0),
 ) -> dict:
     from ...security.skill_scanner import remove_blocked_entry
 
@@ -696,13 +705,14 @@ class WhitelistAddRequest(BaseModel):
 )
 async def add_to_whitelist(
     body: WhitelistAddRequest = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     skill_name = body.skill_name.strip()
     content_hash = body.content_hash
     if not skill_name:
         raise HTTPException(status_code=400, detail="skill_name is required")
 
-    config = load_config()
+    config = load_config(config_path)
     scanner_cfg = config.security.skill_scanner
 
     for entry in scanner_cfg.whitelist:
@@ -719,7 +729,7 @@ async def add_to_whitelist(
             added_at=datetime.now(timezone.utc).isoformat(),
         ),
     )
-    save_config(config)
+    save_config(config, config_path)
     return {"whitelisted": True, "skill_name": skill_name}
 
 
@@ -728,9 +738,10 @@ async def add_to_whitelist(
     summary="Remove a skill from the whitelist",
 )
 async def remove_from_whitelist(
-    skill_name: str = Path(..., min_length=1),
+    skill_name: str = PathParam(..., min_length=1),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
-    config = load_config()
+    config = load_config(config_path)
     scanner_cfg = config.security.skill_scanner
     original_len = len(scanner_cfg.whitelist)
     scanner_cfg.whitelist = [
@@ -741,5 +752,35 @@ async def remove_from_whitelist(
             status_code=404,
             detail=f"Skill '{skill_name}' not found in whitelist",
         )
-    save_config(config)
+    save_config(config, config_path)
     return {"removed": True, "skill_name": skill_name}
+
+
+# #region agent log
+def _agent_debug_config_router_loaded() -> None:
+    import json
+    import time
+
+    try:
+        log_path = Path(__file__).resolve().parents[5] / "debug-3afe84.log"
+        with open(log_path, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "3afe84",
+                        "runId": "post-fix",
+                        "hypothesisId": "A",
+                        "location": "copaw/app/routers/config.py",
+                        "message": "config router module import completed",
+                        "data": {"pathParam_for_routes": True},
+                        "timestamp": int(time.time() * 1000),
+                    },
+                )
+                + "\n",
+            )
+    except OSError:
+        pass
+
+
+_agent_debug_config_router_loaded()
+# #endregion

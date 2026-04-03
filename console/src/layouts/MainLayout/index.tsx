@@ -1,10 +1,5 @@
 import { Layout } from "antd";
-<<<<<<< HEAD
-import { useEffect } from "react";
-import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-=======
 import { Routes, Route, useLocation, Navigate } from "react-router-dom";
->>>>>>> upstream/main
 import Sidebar from "../Sidebar";
 import Header from "../Header";
 import ConsoleCronBubble from "../../components/ConsoleCronBubble";
@@ -49,69 +44,36 @@ const pathToKey: Record<string, string> = {
 
 export default function MainLayout() {
   const location = useLocation();
-  const currentPath = location.pathname;
   const embedChatOnly =
-    typeof window !== "undefined" &&
     new URLSearchParams(location.search).get("embed") === "chat";
+  const currentPath = location.pathname;
   const selectedKey = pathToKey[currentPath] || "chat";
 
+  if (embedChatOnly) {
+    return (
+      <Layout className={styles.mainLayout}>
+        <Content className="page-container" style={{ margin: 0 }}>
+          <div className="page-content">
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat/*" element={<Chat />} />
+              <Route path="*" element={<Navigate to="/chat" replace />} />
+            </Routes>
+          </div>
+        </Content>
+      </Layout>
+    );
+  }
+
   return (
-<<<<<<< HEAD
-    <Layout style={{ height: "100vh" }}>
-      {!embedChatOnly && <Sidebar selectedKey={selectedKey} />}
-      <Layout>
-        {!embedChatOnly && <Header selectedKey={selectedKey} />}
-=======
     <Layout className={styles.mainLayout}>
       <Header />
       <Layout>
         <Sidebar selectedKey={selectedKey} />
->>>>>>> upstream/main
         <Content className="page-container">
           <ConsoleCronBubble />
           <div className="page-content">
             <Routes>
-<<<<<<< HEAD
-              <Route path="/chat" element={<Chat />} />
-              <Route
-                path="/channels"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <ChannelsPage />}
-              />
-              <Route
-                path="/sessions"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <SessionsPage />}
-              />
-              <Route
-                path="/cron-jobs"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <CronJobsPage />}
-              />
-              <Route
-                path="/heartbeat"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <HeartbeatPage />}
-              />
-              <Route
-                path="/skills"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <SkillsPage />}
-              />
-              <Route
-                path="/mcp"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <MCPPage />}
-              />
-              <Route
-                path="/workspace"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <WorkspacePage />}
-              />
-              <Route
-                path="/environments"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <EnvironmentsPage />}
-              />
-              <Route
-                path="/agent-config"
-                element={embedChatOnly ? <Navigate to="/chat" replace /> : <AgentConfigPage />}
-              />
-              <Route path="/models" element={<Navigate to="/chat" replace />} />
-              <Route path="/" element={<Chat />} />
-=======
               <Route path="/" element={<Navigate to="/chat" replace />} />
               <Route path="/chat/*" element={<Chat />} />
               <Route path="/channels" element={<ChannelsPage />} />
@@ -124,7 +86,10 @@ export default function MainLayout() {
               <Route path="/mcp" element={<MCPPage />} />
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/models" element={<ModelsPage />} />
+              <Route
+                path="/models"
+                element={<Navigate to="/chat" replace />}
+              />
               <Route path="/environments" element={<EnvironmentsPage />} />
               <Route path="/agent-config" element={<AgentConfigPage />} />
               <Route path="/security" element={<SecurityPage />} />
@@ -133,7 +98,6 @@ export default function MainLayout() {
                 path="/voice-transcription"
                 element={<VoiceTranscriptionPage />}
               />
->>>>>>> upstream/main
             </Routes>
           </div>
         </Content>

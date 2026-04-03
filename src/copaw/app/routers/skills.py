@@ -480,7 +480,7 @@ def _mtime_to_iso(mtime: float) -> str:
 
 
 def _build_workspace_skill_specs(workspace_dir: Path) -> list[SkillSpec]:
-    manifest = read_skill_manifest(workspace_dir, reconcile=False)
+    manifest = read_skill_manifest(workspace_dir, reconcile=True)
     entries = manifest.get("skills", {})
     skill_root = get_workspace_skills_dir(workspace_dir)
     specs: list[SkillSpec] = []

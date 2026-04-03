@@ -242,9 +242,9 @@ def _load_config_rules() -> tuple[list[GuardRule], set[str]]:
     Returns ``(custom_rules, disabled_ids)``.
     """
     try:
-        from copaw.config import load_config
+        from ...config_access import load_security_config
 
-        cfg = load_config().security.tool_guard
+        cfg = load_security_config().security.tool_guard
     except Exception:
         return [], set()
 

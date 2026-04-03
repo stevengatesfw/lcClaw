@@ -14,40 +14,6 @@ import { useTranslation } from "react-i18next";
 import { useAppMessage } from "../hooks/useAppMessage";
 import AgentSelector from "../components/AgentSelector";
 import {
-<<<<<<< HEAD
-  MessageSquare,
-  Radio,
-  Zap,
-  MessageCircle,
-  Wifi,
-  UsersRound,
-  CalendarClock,
-  Activity,
-  Sparkles,
-  Briefcase,
-  Cpu,
-  Globe,
-  Settings,
-  Plug,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from "lucide-react";
-
-const { Sider } = Layout;
-
-const keyToPath: Record<string, string> = {
-  chat: "/chat",
-  channels: "/channels",
-  sessions: "/sessions",
-  "cron-jobs": "/cron-jobs",
-  heartbeat: "/heartbeat",
-  skills: "/skills",
-  mcp: "/mcp",
-  workspace: "/workspace",
-  environments: "/environments",
-  "agent-config": "/agent-config",
-};
-=======
   SparkChatTabFill,
   SparkWifiLine,
   SparkUserGroupLine,
@@ -55,7 +21,6 @@ const keyToPath: Record<string, string> = {
   SparkVoiceChat01Line,
   SparkMagicWandLine,
   SparkLocalFileLine,
-  SparkModePlazaLine,
   SparkInternetLine,
   SparkModifyLine,
   SparkBrowseLine,
@@ -75,13 +40,13 @@ import { authApi } from "../api/modules/auth";
 import styles from "./index.module.less";
 import { useTheme } from "../contexts/ThemeContext";
 import { KEY_TO_PATH, DEFAULT_OPEN_KEYS } from "./constants";
+import { redirectToLogin } from "../utils/router";
 
 // ── Layout ────────────────────────────────────────────────────────────────
 
 const { Sider } = Layout;
 
 // ── Types ─────────────────────────────────────────────────────────────────
->>>>>>> upstream/main
 
 interface SidebarProps {
   selectedKey: string;
@@ -145,7 +110,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       setAccountModalOpen(false);
       accountForm.resetFields();
       clearAuthToken();
-      window.location.href = "/login";
+      redirectToLogin();
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : "";
       let msg = t("account.updateFailed");
@@ -238,12 +203,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       icon: <SparkAgentLine size={18} />,
       path: "/agents",
       label: t("nav.agents"),
-    },
-    {
-      key: "models",
-      icon: <SparkModePlazaLine size={18} />,
-      path: "/models",
-      label: t("nav.models"),
     },
     {
       key: "environments",
@@ -341,16 +300,9 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       label: collapsed ? null : t("nav.settings"),
       children: [
         {
-<<<<<<< HEAD
-=======
           key: "agents",
           label: collapsed ? null : t("nav.agents"),
           icon: <SparkAgentLine size={16} />,
-        },
-        {
-          key: "models",
-          label: collapsed ? null : t("nav.models"),
-          icon: <SparkModePlazaLine size={16} />,
         },
         {
           key: "skill-pool",
@@ -358,7 +310,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           icon: <SparkOtherLine size={16} />,
         },
         {
->>>>>>> upstream/main
           key: "environments",
           label: collapsed ? null : t("nav.environments"),
           icon: <SparkInternetLine size={16} />,
@@ -386,37 +337,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
 
   return (
     <Sider
-<<<<<<< HEAD
-      collapsed={collapsed}
-      onCollapse={(value) => setCollapsed(value)}
-      width={260}
-      style={{
-        background: "#F5F6F7",
-        borderRight: "1px solid #e4eaf3",
-        overflow: "auto",
-        height: "100vh",
-      }}
-    >
-      <div
-        style={{
-          height: 64,
-          display: "flex",
-          alignItems: "center",
-          padding: "0 16px",
-          gap: 12,
-        }}
-      >
-        {!collapsed && (
-          <>
-            {/* Logo removed */}
-            {version && (
-              <span
-                style={{
-                  fontSize: 11,
-                  color: "#bbb",
-                  fontWeight: 400,
-                  lineHeight: 1,
-=======
       width={collapsed ? 72 : 240}
       className={`${styles.sider}${
         collapsed ? ` ${styles.siderCollapsed}` : ""
@@ -438,7 +358,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
                 overlayInnerStyle={{
                   background: "rgba(0,0,0,0.75)",
                   color: "#fff",
->>>>>>> upstream/main
                 }}
               >
                 <button
@@ -489,7 +408,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
             icon={<SparkExitFullscreenLine size={16} />}
             onClick={() => {
               clearAuthToken();
-              window.location.href = "/login";
+              redirectToLogin();
             }}
             block
             className={`${styles.authBtn} ${
@@ -512,14 +431,7 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
             )
           }
           onClick={() => setCollapsed(!collapsed)}
-<<<<<<< HEAD
-          style={{
-            margin: "auto",
-            color: "#0E5DD8",
-          }}
-=======
           className={styles.collapseToggle}
->>>>>>> upstream/main
         />
       </div>
 

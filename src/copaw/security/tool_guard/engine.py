@@ -42,9 +42,9 @@ def _guard_enabled() -> bool:
         return env_val.lower() in _TRUE_STRINGS
 
     try:
-        from copaw.config import load_config
+        from ..config_access import load_security_config
 
-        cfg = load_config()
+        cfg = load_security_config()
         return cfg.security.tool_guard.enabled
     except Exception:
         return True

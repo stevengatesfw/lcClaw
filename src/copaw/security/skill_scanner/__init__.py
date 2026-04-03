@@ -85,9 +85,9 @@ _VALID_MODES = {"block", "warn", "off"}
 def _load_scanner_config() -> Any:
     """Load SkillScannerConfig from the app config (lazy import)."""
     try:
-        from ...config import load_config
+        from ..config_access import load_security_config
 
-        return load_config().security.skill_scanner
+        return load_security_config().security.skill_scanner
     except Exception:
         return None
 
@@ -177,9 +177,9 @@ _history_lock = threading.Lock()
 
 def _get_blocked_history_path() -> Path:
     try:
-        from ...constant import WORKING_DIR
+        from ..config_access import get_security_working_dir
 
-        return WORKING_DIR / _BLOCKED_HISTORY_FILE
+        return get_security_working_dir() / _BLOCKED_HISTORY_FILE
     except Exception:
         return Path.home() / ".copaw" / _BLOCKED_HISTORY_FILE
 

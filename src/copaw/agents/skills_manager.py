@@ -880,6 +880,86 @@ def sync_skills_from_active_to_customized(
     return synced_count, skipped_count
 
 
+def sync_shared_skills_to_workspace(workspace_dir: Path) -> tuple[int, int]:
+    """Mirror platform shared skills into one workspace for runtime registration.
+
+    Shared skills live outside workspace manifests, so runtime registration would
+    otherwise miss them. We copy platform-enabled shared skills into
+    ``<workspace>/skills`` and stamp their manifest entries with ``source=shared``.
+    Existing non-shared workspace skills always win on name conflicts.
+    """
+    shared_dir = get_shared_skills_dir()
+    platform_disabled = _load_platform_disabled_skill_names()
+    workspace_skills_dir = get_workspace_skills_dir(workspace_dir)
+    workspace_skills_dir.mkdir(parents=True, exist_ok=True)
+
+    previous_manifest = read_skill_manifest(workspace_dir, reconcile=False)
+    previous_entries = previous_manifest.get("skills", {})
+
+    shared_skills: dict[str, Path] = {}
+    if shared_dir is not None and shared_dir.exists():
+        for name, path in _collect_skills_from_dir(shared_dir).items():
+            if name not in platform_disabled:
+                shared_skills[name] = path
+
+    copied_count = 0
+    skipped_count = 0
+    managed_names: set[str] = set()
+
+    for skill_name, src_dir in sorted(shared_skills.items()):
+        previous_entry = previous_entries.get(skill_name) or {}
+        previous_source = str(previous_entry.get("source") or "")
+        dest_dir = workspace_skills_dir / skill_name
+
+        if dest_dir.exists() and previous_source not in {"", "shared"}:
+            skipped_count += 1
+            continue
+
+        managed_names.add(skill_name)
+        if dest_dir.exists() and _is_directory_same(dest_dir, src_dir):
+            skipped_count += 1
+            continue
+
+        _copy_skill_dir(src_dir, dest_dir)
+        copied_count += 1
+
+    stale_shared_names = [
+        skill_name
+        for skill_name, entry in previous_entries.items()
+        if entry.get("source") == "shared" and skill_name not in managed_names
+    ]
+    for skill_name in stale_shared_names:
+        stale_dir = workspace_skills_dir / skill_name
+        if stale_dir.exists():
+            shutil.rmtree(stale_dir)
+
+    if managed_names or stale_shared_names:
+        reconcile_workspace_manifest(workspace_dir)
+        manifest_path = get_workspace_skill_manifest_path(workspace_dir)
+
+        def _update(payload: dict[str, Any]) -> dict[str, Any]:
+            skills = payload.setdefault("skills", {})
+            for skill_name in managed_names:
+                entry = skills.get(skill_name)
+                if not isinstance(entry, dict):
+                    continue
+                previous_entry = previous_entries.get(skill_name) or {}
+                entry["source"] = "shared"
+                entry["enabled"] = bool(previous_entry.get("enabled", True))
+                entry["channels"] = previous_entry.get("channels") or ["all"]
+                if "config" in previous_entry:
+                    entry["config"] = previous_entry.get("config") or {}
+            return payload
+
+        _mutate_json(
+            manifest_path,
+            _default_workspace_manifest(),
+            _update,
+        )
+
+    return copied_count, skipped_count
+
+
 def list_available_skills(user_id: str | None = None) -> list[str]:
     """
     List all available skills in active_skills directory.
@@ -1457,7 +1537,9 @@ def read_skill_manifest(
     to skip the reconciliation and just return the cached JSON.
     """
     if reconcile:
-        return reconcile_workspace_manifest(workspace_dir)
+        ensure_skills_initialized(workspace_dir)
+        path = get_workspace_skill_manifest_path(workspace_dir)
+        return _read_json_unlocked(path, _default_workspace_manifest())
     path = get_workspace_skill_manifest_path(workspace_dir)
     return _read_json_unlocked(path, _default_workspace_manifest())
 
@@ -1500,6 +1582,7 @@ def resolve_effective_skills(
 
 def ensure_skills_initialized(workspace_dir: Path) -> None:
     """Ensure workspace manifests exist before runtime use."""
+    sync_shared_skills_to_workspace(workspace_dir)
     reconcile_workspace_manifest(workspace_dir)
 
 

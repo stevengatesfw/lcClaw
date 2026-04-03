@@ -53,9 +53,9 @@ def _load_config_tool_guard():
     Returns ``None`` when config cannot be loaded.
     """
     try:
-        from copaw.config import load_config
+        from ..config_access import load_security_config
 
-        return load_config().security.tool_guard
+        return load_security_config().security.tool_guard
     except Exception:
         return None
 

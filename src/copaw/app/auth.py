@@ -361,7 +361,11 @@ def verify_lcagent_token(token: str) -> Optional[str]:
             algorithms=["HS256"],
             options={"verify_exp": True},
         )
-        return payload.get("user_id")
+        uid = payload.get("user_id")
+        if uid is None:
+            return None
+        # LCAgent Passport uses numeric account.id; pathlib rejects Path / int → 500 on config APIs.
+        return str(uid)
     except Exception:
         return None
 

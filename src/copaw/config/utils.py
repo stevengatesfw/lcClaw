@@ -638,43 +638,43 @@ DEFAULT_USER_ID = "default"
 
 def get_chats_path_for_user(user_id: Optional[str]) -> Path:
     """Return chats.json path for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / CHATS_FILE).expanduser()
 
 
 def get_user_working_dir(user_id: Optional[str]) -> Path:
     """Return working directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid).expanduser()
 
 
 def get_sessions_dir_for_user(user_id: Optional[str]) -> Path:
     """Return sessions directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "sessions").expanduser()
 
 
 def get_memory_dir_for_user(user_id: Optional[str]) -> Path:
     """Return memory directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "memory").expanduser()
 
 
 def get_file_store_dir_for_user(user_id: Optional[str]) -> Path:
     """Return file_store directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "file_store").expanduser()
 
 
 def get_customized_skills_dir_for_user(user_id: Optional[str]) -> Path:
     """Return customized_skills directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "customized_skills").expanduser()
 
 
 def get_active_skills_dir_for_user(user_id: Optional[str]) -> Path:
     """Return active_skills directory for a user. Always uses per-user dir."""
-    uid = user_id or DEFAULT_USER_ID
+    uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "active_skills").expanduser()
 
 
@@ -708,6 +708,8 @@ def get_effective_config_path_for_runner(user_id: Optional[str]) -> Path:
 def get_heartbeat_config_from_path(config_path: Path) -> HeartbeatConfig:
     """Load heartbeat section from a specific config file."""
     cfg = load_config(config_path)
+    if cfg.agents.defaults is None:
+        return HeartbeatConfig()
     hb = cfg.agents.defaults.heartbeat
     return hb if hb is not None else HeartbeatConfig()
 

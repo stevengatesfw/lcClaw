@@ -1,11 +1,4 @@
 import { createGlobalStyle } from "antd-style";
-<<<<<<< HEAD
-import { ConfigProvider } from "antd";
-import zhCN from "antd/es/locale/zh_CN";
-import { BrowserRouter } from "react-router-dom";
-import MainLayout from "./layouts/MainLayout";
-import { lcagentAntdTheme } from "./theme/lcagentTheme";
-=======
 import { ConfigProvider, bailianTheme } from "@agentscope-ai/design";
 import { App as AntdApp } from "antd";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
@@ -29,7 +22,7 @@ import LoginPage from "./pages/Login";
 import { authApi } from "./api/modules/auth";
 import { languageApi } from "./api/modules/language";
 import { getApiUrl, getApiToken, clearAuthToken } from "./api/config";
->>>>>>> upstream/main
+import { getRouterBasename } from "./utils/router";
 import "./styles/layout.css";
 import "./styles/form-override.css";
 
@@ -54,15 +47,6 @@ const GlobalStyle = createGlobalStyle`
 }
 `;
 
-<<<<<<< HEAD
-function App() {
-  // When deployed under /copaw/, router must use basename so pathname matches routes.
-  // Avoids "No routes matched location '/copaw/'" when opening /copaw/ directly.
-  const basename =
-    typeof window !== "undefined" && window.location.pathname.startsWith("/copaw")
-      ? "/copaw"
-      : "/";
-=======
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<"loading" | "auth-required" | "ok">(
     "loading",
@@ -120,10 +104,6 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function getRouterBasename(pathname: string): string | undefined {
-  return /^\/console(?:\/|$)/.test(pathname) ? "/console" : undefined;
-}
-
 function AppInner() {
   const basename = getRouterBasename(window.location.pathname);
   const { i18n } = useTranslation();
@@ -164,15 +144,10 @@ function AppInner() {
       i18n.off("languageChanged", handleLanguageChanged);
     };
   }, [i18n]);
->>>>>>> upstream/main
 
   return (
     <BrowserRouter basename={basename}>
       <GlobalStyle />
-<<<<<<< HEAD
-      <ConfigProvider locale={zhCN} theme={lcagentAntdTheme}>
-        <MainLayout />
-=======
       <ConfigProvider
         {...bailianTheme}
         prefix="copaw"
@@ -201,7 +176,6 @@ function AppInner() {
             />
           </Routes>
         </AntdApp>
->>>>>>> upstream/main
       </ConfigProvider>
     </BrowserRouter>
   );

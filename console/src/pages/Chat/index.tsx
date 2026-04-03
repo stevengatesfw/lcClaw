@@ -19,9 +19,6 @@ import {
   getLcagentConsoleApiUrl,
 } from "../../api/config";
 import { buildAuthHeaders } from "../../api/authHeaders";
-import { useLocalStorageState } from "ahooks";
-import LcagentCapabilityBar from "./LcagentCapabilityBar";
-import { waitForToken } from "../../api/tokenStore";
 import { providerApi } from "../../api/modules/provider";
 import type { ProviderInfo, ModelInfo } from "../../api/types";
 import ModelSelector from "./ModelSelector";
@@ -37,7 +34,6 @@ import {
   toDisplayUrl,
   copyText,
   extractCopyableText,
-  buildModelError,
   normalizeContentUrls,
   extractUserMessageText,
   type CopyableResponse,
@@ -318,22 +314,6 @@ export default function ChatPage() {
   const embedChatOnly =
     typeof window !== "undefined" &&
     new URLSearchParams(location.search).get("embed") === "chat";
-  const [enableAgent, setEnableAgent] = useLocalStorageState<boolean>(
-    "lcagent-chat-enable-agent",
-    { defaultValue: false },
-  );
-  const [enableSkills, setEnableSkills] = useLocalStorageState<boolean>(
-    "lcagent-chat-enable-skills",
-    { defaultValue: false },
-  );
-  const [publishedAppId, setPublishedAppId] = useLocalStorageState<string>(
-    "lcagent-chat-published-app-id",
-    { defaultValue: "" },
-  );
-  const [publishedAppOptions, setPublishedAppOptions] = useState<
-    { value: string; label: string; disabled?: boolean }[]
-  >([]);
-  const [publishedAppsLoading, setPublishedAppsLoading] = useState(false);
   const { selectedAgent } = useAgentStore();
   const [refreshKey, setRefreshKey] = useState(0);
   const runtimeLoadingBridgeRef = useRef<RuntimeLoadingBridgeApi | null>(null);
@@ -368,71 +348,6 @@ export default function ChatPage() {
   if (chatId && sessionApi.preferredChatId !== chatId) {
     sessionApi.preferredChatId = chatId;
   }
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const token = getApiToken() || (await waitForToken(5000));
-      if (!token) {
-        setPublishedAppOptions([]);
-        return;
-      }
-      setPublishedAppsLoading(true);
-      try {
-        const res = await fetch(getLcagentConsoleApiUrl("/home/published-apps"), {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-          credentials: "same-origin",
-        });
-        if (!res.ok || cancelled) {
-          return;
-        }
-        const json = await res.json();
-        const wrap = json?.result ?? json;
-        const raw = Array.isArray(wrap?.apps) ? wrap.apps : [];
-        const opts = raw.map(
-          (row: {
-            id: string;
-            name: string;
-            enable_api?: boolean;
-            enable_api_call?: string;
-          }) => {
-            const apiOk = row.enable_api === true;
-            const callOk =
-              apiOk && String(row.enable_api_call || "0").trim() === "1";
-            let label = row.name || row.id;
-            if (!apiOk) {
-              label = `${label}（需开启 API）`;
-            } else if (!callOk) {
-              label = `${label}（需开启 API 调用）`;
-            }
-            return {
-              value: row.id,
-              label,
-              disabled: !callOk,
-            };
-          },
-        );
-        if (!cancelled) {
-          setPublishedAppOptions(opts);
-        }
-      } catch (e) {
-        console.error("published apps list failed:", e);
-        if (!cancelled) {
-          setPublishedAppOptions([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setPublishedAppsLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Register session API event callbacks for URL synchronization
 
@@ -598,11 +513,8 @@ export default function ChatPage() {
         stream: true,
         meta: {
           ...bizMeta,
-          lcagent_enable_agent: Boolean(enableAgent),
-          lcagent_enable_skills: Boolean(enableSkills),
-          ...(enableAgent && publishedAppId.trim()
-            ? { lcagent_published_app_id: publishedAppId.trim() }
-            : {}),
+          lcagent_enable_agent: false,
+          lcagent_enable_skills: false,
         },
       };
 
@@ -634,7 +546,7 @@ export default function ChatPage() {
 
       return response;
     },
-    [selectedAgent, enableAgent, enableSkills, publishedAppId],
+    [selectedAgent],
   );
 
   const handleFileUpload = useCallback(
@@ -841,16 +753,6 @@ export default function ChatPage() {
         flexDirection: "column",
       }}
     >
-      <LcagentCapabilityBar
-        enableAgent={Boolean(enableAgent)}
-        enableSkills={Boolean(enableSkills)}
-        onEnableAgentChange={(v) => setEnableAgent(v)}
-        onEnableSkillsChange={(v) => setEnableSkills(v)}
-        publishedAppId={publishedAppId || ""}
-        publishedAppOptions={publishedAppOptions}
-        publishedAppsLoading={publishedAppsLoading}
-        onPublishedAppChange={(id) => setPublishedAppId(id)}
-      />
       <div
         className={styles.chatMessagesArea}
         style={{ flex: 1, minHeight: 0, minWidth: 0 }}

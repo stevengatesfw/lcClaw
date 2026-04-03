@@ -6,15 +6,30 @@ import { getToken } from "./tokenStore";
 const AUTH_TOKEN_KEY = "copaw_auth_token";
 
 /**
+ * Console is served under LCAgent's `/copaw/` (iframe or same-origin tab).
+ * Then API must be `/copaw/api/...` so ingress `location /copaw/api/` reaches Copaw;
+ * root `/api/...` is often routed to LCAgent Flask and breaks agents/tools/heartbeat, etc.
+ */
+function isLcagentCopawMount(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return /^\/copaw(?:\/|$)/.test(window.location.pathname);
+}
+
+/**
  * Get the full API URL with /api prefix
  * @param path - API path (e.g., "/models", "/skills")
- * @returns Full API URL (e.g., "http://localhost:8088/api/models" or "/api/models")
+ * @returns Full API URL (e.g., "http://localhost:8088/api/models" or "/api/models" or "/copaw/api/models")
  */
 export function getApiUrl(path: string): string {
-  const base = typeof VITE_API_BASE_URL !== "undefined" ? VITE_API_BASE_URL || "" : "";
-  const apiPrefix = "/api";
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${apiPrefix}${normalizedPath}`;
+  const apiSuffix = `/api${normalizedPath}`;
+  if (isLcagentCopawMount()) {
+    return `/copaw${apiSuffix}`;
+  }
+  const base = typeof VITE_API_BASE_URL !== "undefined" ? VITE_API_BASE_URL || "" : "";
+  return `${base}${apiSuffix}`;
 }
 
 /**
