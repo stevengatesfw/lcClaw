@@ -1,6 +1,14 @@
 import { request } from "../request";
-import { getApiUrl } from "../config";
+import { getApiUrl, getApiToken } from "../config";
 import type { MdFileInfo, MdFileContent, DailyMemoryFile } from "../types";
+
+function workspaceAuthHeaders(): HeadersInit {
+  const token = getApiToken();
+  if (!token) {
+    return {};
+  }
+  return { Authorization: `Bearer ${token}` };
+}
 
 export const workspaceApi = {
   listFiles: () =>
@@ -27,6 +35,7 @@ export const workspaceApi = {
   downloadWorkspace: async (): Promise<Blob> => {
     const response = await fetch(getApiUrl("/workspace/download"), {
       method: "GET",
+      headers: workspaceAuthHeaders(),
     });
 
     if (!response.ok) {
@@ -47,6 +56,7 @@ export const workspaceApi = {
 
     const response = await fetch(getApiUrl("/workspace/upload"), {
       method: "POST",
+      headers: workspaceAuthHeaders(),
       body: formData,
     });
 

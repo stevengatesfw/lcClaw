@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ...config.utils import copaw_storage_isolation_enabled
+from ..auth import get_current_user_id_required
+from ..storage_deps import get_storage_jobs_path
 from .manager import CronManager
 from .models import CronJobSpec, CronJobView
+from .repo.aggregating import AggregatingJobRepository
+from .repo.json_repo import JsonJobRepository
 
 router = APIRouter(prefix="/cron", tags=["cron"])
+
+_OWNER = AggregatingJobRepository.META_OWNER_KEY
 
 
 def get_cron_manager(request: Request) -> CronManager:
@@ -21,7 +30,14 @@ def get_cron_manager(request: Request) -> CronManager:
 
 
 @router.get("/jobs", response_model=list[CronJobSpec])
-async def list_jobs(mgr: CronManager = Depends(get_cron_manager)):
+async def list_jobs(
+    mgr: CronManager = Depends(get_cron_manager),
+    uid: str = Depends(get_current_user_id_required),
+    jobs_path: Path = Depends(get_storage_jobs_path),
+):
+    if copaw_storage_isolation_enabled():
+        repo = JsonJobRepository(jobs_path)
+        return await repo.list_jobs()
     return await mgr.list_jobs()
 
 
@@ -37,10 +53,14 @@ async def get_job(job_id: str, mgr: CronManager = Depends(get_cron_manager)):
 async def create_job(
     spec: CronJobSpec,
     mgr: CronManager = Depends(get_cron_manager),
+    uid: str = Depends(get_current_user_id_required),
 ):
     # server generates id; ignore client-provided spec.id
     job_id = str(uuid.uuid4())
-    created = spec.model_copy(update={"id": job_id})
+    meta = dict(spec.meta)
+    if copaw_storage_isolation_enabled():
+        meta[_OWNER] = uid
+    created = spec.model_copy(update={"id": job_id, "meta": meta})
     await mgr.create_or_replace_job(created)
     return created
 
@@ -50,11 +70,16 @@ async def replace_job(
     job_id: str,
     spec: CronJobSpec,
     mgr: CronManager = Depends(get_cron_manager),
+    uid: str = Depends(get_current_user_id_required),
 ):
     if spec.id != job_id:
         raise HTTPException(status_code=400, detail="job_id mismatch")
-    await mgr.create_or_replace_job(spec)
-    return spec
+    meta = dict(spec.meta)
+    if copaw_storage_isolation_enabled():
+        meta[_OWNER] = uid
+    fixed = spec.model_copy(update={"meta": meta})
+    await mgr.create_or_replace_job(fixed)
+    return fixed
 
 
 @router.delete("/jobs/{job_id}")

@@ -34,11 +34,13 @@ class ConfigWatcher:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         config_path: Optional[Path] = None,
         cron_manager: Any = None,
+        storage_isolation_enabled: bool = False,
     ):
         self._channel_manager = channel_manager
         self._poll_interval = poll_interval
         self._config_path = config_path or get_config_path()
         self._cron_manager = cron_manager
+        self._storage_isolation = storage_isolation_enabled
         self._task: Optional[asyncio.Task] = None
 
         # Snapshot of the last known channel config (for diffing)
@@ -175,6 +177,9 @@ class ConfigWatcher:
         """Update heartbeat hash and reschedule if changed."""
         hb = getattr(loaded_config.agents.defaults, "heartbeat", None)
         new_hb_hash = _heartbeat_hash(hb)
+        if self._storage_isolation:
+            self._last_heartbeat_hash = new_hb_hash
+            return
         if (
             self._cron_manager is not None
             and new_hb_hash != self._last_heartbeat_hash

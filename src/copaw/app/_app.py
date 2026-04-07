@@ -20,6 +20,7 @@ from ..config import (  # pylint: disable=no-name-in-module
     ConfigWatcher,
 )
 from ..config.utils import (
+    copaw_storage_isolation_enabled,
     get_jobs_path,
     get_chats_path_for_user,
     get_config_path,
@@ -31,6 +32,7 @@ from .channels import ChannelManager  # pylint: disable=no-name-in-module
 from .channels.utils import make_process_from_runner
 from .mcp import MCPClientManager, MCPConfigWatcher  # MCP hot-reload support
 from .runner.repo.json_repo import JsonChatRepository
+from .crons.repo.aggregating import AggregatingJobRepository
 from .crons.repo.json_repo import JsonJobRepository
 from .crons.manager import CronManager
 from .runner.manager import ChatManager
@@ -50,9 +52,10 @@ mimetypes.add_type("application/javascript", ".mjs")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/wasm", ".wasm")
 
-# Load persisted env vars into os.environ at module import time
-# so they are available before the lifespan starts.
-load_envs_into_environ()
+# Load persisted env vars into os.environ (single-tenant only).
+# With storage isolation (LAZY_PLATFORM_KEY), envs are per-user via API.
+if not copaw_storage_isolation_enabled():
+    load_envs_into_environ()
 
 runner = AgentRunner()
 
@@ -70,16 +73,22 @@ async def lifespan(
     add_copaw_file_handler(WORKING_DIR / "copaw.log")
     await runner.start()
 
-    # --- MCP client manager init (independent module, hot-reloadable) ---
-    config = load_config()
+    _storage_iso = copaw_storage_isolation_enabled()
+
+    # --- MCP client manager init (root config; per-user MCP when isolated) ---
+    config = load_config(get_config_path())
     mcp_manager = MCPClientManager()
-    if hasattr(config, "mcp"):
+    if not _storage_iso and hasattr(config, "mcp"):
         try:
             await mcp_manager.init_from_config(config.mcp)
             runner.set_mcp_manager(mcp_manager)
             logger.debug("MCP client manager initialized")
         except Exception:
             logger.exception("Failed to initialize MCP manager")
+    else:
+        runner.set_mcp_manager(None)
+        if _storage_iso:
+            logger.debug("Storage isolation: MCP is per-user (not global manager)")
 
     # --- channel connector init/start (from config.json) ---
     channel_manager = ChannelManager.from_config(
@@ -90,12 +99,18 @@ async def lifespan(
     await channel_manager.start_all()
 
     # --- cron init/start ---
-    repo = JsonJobRepository(get_jobs_path())
+    if _storage_iso:
+        job_repo: AggregatingJobRepository | JsonJobRepository = (
+            AggregatingJobRepository(include_legacy=True)
+        )
+    else:
+        job_repo = JsonJobRepository(get_jobs_path())
     cron_manager = CronManager(
-        repo=repo,
+        repo=job_repo,
         runner=runner,
         channel_manager=channel_manager,
         timezone="UTC",
+        storage_isolation_enabled=_storage_iso,
     )
     await cron_manager.start()
 
@@ -120,12 +135,13 @@ async def lifespan(
     config_watcher = ConfigWatcher(
         channel_manager=channel_manager,
         cron_manager=cron_manager,
+        storage_isolation_enabled=_storage_iso,
     )
     await config_watcher.start()
 
     # --- MCP config watcher (auto-reload MCP clients on change) ---
     mcp_watcher = None
-    if hasattr(config, "mcp"):
+    if not _storage_iso and hasattr(config, "mcp"):
         try:
             mcp_watcher = MCPConfigWatcher(
                 mcp_manager=mcp_manager,
@@ -303,10 +319,17 @@ async def lifespan(
                 logger.exception(
                     "restart_services: old mcp_manager.close_all failed",
                 )
+        try:
+            await runner.shutdown_mcp_managers_cache()
+        except Exception:
+            logger.exception(
+                "restart_services: runner.shutdown_mcp_managers_cache failed",
+            )
 
         # 3) Build and start new stack
+        _rs_iso = copaw_storage_isolation_enabled()
         new_mcp_manager = MCPClientManager()
-        if hasattr(config, "mcp"):
+        if not _rs_iso and hasattr(config, "mcp"):
             try:
                 await new_mcp_manager.init_from_config(config.mcp)
             except Exception:
@@ -329,12 +352,16 @@ async def lifespan(
             await _teardown_new_stack(mcp_mgr=new_mcp_manager)
             return
 
-        job_repo = JsonJobRepository(get_jobs_path())
+        if _rs_iso:
+            new_job_repo = AggregatingJobRepository(include_legacy=True)
+        else:
+            new_job_repo = JsonJobRepository(get_jobs_path())
         new_cron_manager = CronManager(
-            repo=job_repo,
+            repo=new_job_repo,
             runner=runner,
             channel_manager=new_channel_manager,
             timezone="UTC",
+            storage_isolation_enabled=_rs_iso,
         )
         try:
             await new_cron_manager.start()
@@ -351,6 +378,7 @@ async def lifespan(
         new_config_watcher = ConfigWatcher(
             channel_manager=new_channel_manager,
             cron_manager=new_cron_manager,
+            storage_isolation_enabled=_rs_iso,
         )
         try:
             await new_config_watcher.start()
@@ -366,7 +394,7 @@ async def lifespan(
             return
 
         new_mcp_watcher = None
-        if hasattr(config, "mcp"):
+        if not _rs_iso and hasattr(config, "mcp"):
             try:
                 new_mcp_watcher = MCPConfigWatcher(
                     mcp_manager=new_mcp_manager,
@@ -386,7 +414,7 @@ async def lifespan(
                 )
                 return
 
-        if hasattr(config, "mcp"):
+        if not _rs_iso and hasattr(config, "mcp"):
             runner.set_mcp_manager(new_mcp_manager)
             app.state.mcp_manager = new_mcp_manager
             app.state.mcp_watcher = new_mcp_watcher

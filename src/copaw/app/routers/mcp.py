@@ -3,15 +3,27 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Dict, List, Optional, Literal
 
-from fastapi import APIRouter, Body, HTTPException, Path
+from fastapi import APIRouter, Body, Depends, HTTPException, Path as PathParam, Request
 from pydantic import BaseModel, Field
 
 from ...config import load_config, save_config
 from ...config.config import MCPClientConfig
+from ...config.utils import copaw_storage_isolation_enabled
+from ..auth import get_current_user_id_required
+from ..storage_deps import get_storage_config_path
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+
+
+async def _invalidate_mcp_runner(request: Request, uid: str) -> None:
+    if not copaw_storage_isolation_enabled() or not uid:
+        return
+    runner = getattr(request.app.state, "runner", None)
+    if runner is not None:
+        await runner.invalidate_mcp_cache_for_user(uid)
 
 
 class MCPClientInfo(BaseModel):
@@ -194,9 +206,11 @@ def _build_client_info(key: str, client: MCPClientConfig) -> MCPClientInfo:
     response_model=List[MCPClientInfo],
     summary="List all MCP clients",
 )
-async def list_mcp_clients() -> List[MCPClientInfo]:
+async def list_mcp_clients(
+    config_path: Path = Depends(get_storage_config_path),
+) -> List[MCPClientInfo]:
     """Get list of all configured MCP clients."""
-    config = load_config()
+    config = load_config(config_path)
     return [
         _build_client_info(key, client)
         for key, client in config.mcp.clients.items()
@@ -208,9 +222,12 @@ async def list_mcp_clients() -> List[MCPClientInfo]:
     response_model=MCPClientInfo,
     summary="Get MCP client details",
 )
-async def get_mcp_client(client_key: str = Path(...)) -> MCPClientInfo:
+async def get_mcp_client(
+    client_key: str = PathParam(...),
+    config_path: Path = Depends(get_storage_config_path),
+) -> MCPClientInfo:
     """Get details of a specific MCP client."""
-    config = load_config()
+    config = load_config(config_path)
     client = config.mcp.clients.get(client_key)
     if client is None:
         raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
@@ -224,11 +241,14 @@ async def get_mcp_client(client_key: str = Path(...)) -> MCPClientInfo:
     status_code=201,
 )
 async def create_mcp_client(
+    request: Request,
     client_key: str = Body(..., embed=True),
     client: MCPClientCreateRequest = Body(..., embed=True),
+    config_path: Path = Depends(get_storage_config_path),
+    uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Create a new MCP client configuration."""
-    config = load_config()
+    config = load_config(config_path)
 
     # Check if client already exists
     if client_key in config.mcp.clients:
@@ -254,7 +274,9 @@ async def create_mcp_client(
 
     # Add to config and save
     config.mcp.clients[client_key] = new_client
-    save_config(config)
+    save_config(config, config_path)
+
+    await _invalidate_mcp_runner(request, uid)
 
     return _build_client_info(client_key, new_client)
 
@@ -265,11 +287,14 @@ async def create_mcp_client(
     summary="Update an MCP client",
 )
 async def update_mcp_client(
-    client_key: str = Path(...),
+    request: Request,
+    client_key: str = PathParam(...),
     updates: MCPClientUpdateRequest = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
+    uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Update an existing MCP client configuration."""
-    config = load_config()
+    config = load_config(config_path)
 
     # Check if client exists
     existing = config.mcp.clients.get(client_key)
@@ -291,7 +316,9 @@ async def update_mcp_client(
     config.mcp.clients[client_key] = updated_client
 
     # Save updated config
-    save_config(config)
+    save_config(config, config_path)
+
+    await _invalidate_mcp_runner(request, uid)
 
     return _build_client_info(client_key, updated_client)
 
@@ -302,10 +329,13 @@ async def update_mcp_client(
     summary="Toggle MCP client enabled status",
 )
 async def toggle_mcp_client(
-    client_key: str = Path(...),
+    request: Request,
+    client_key: str = PathParam(...),
+    config_path: Path = Depends(get_storage_config_path),
+    uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Toggle the enabled status of an MCP client."""
-    config = load_config()
+    config = load_config(config_path)
 
     client = config.mcp.clients.get(client_key)
     if client is None:
@@ -313,7 +343,9 @@ async def toggle_mcp_client(
 
     # Toggle enabled status
     client.enabled = not client.enabled
-    save_config(config)
+    save_config(config, config_path)
+
+    await _invalidate_mcp_runner(request, uid)
 
     return _build_client_info(client_key, client)
 
@@ -324,16 +356,21 @@ async def toggle_mcp_client(
     summary="Delete an MCP client",
 )
 async def delete_mcp_client(
-    client_key: str = Path(...),
+    request: Request,
+    client_key: str = PathParam(...),
+    config_path: Path = Depends(get_storage_config_path),
+    uid: str = Depends(get_current_user_id_required),
 ) -> Dict[str, str]:
     """Delete an MCP client configuration."""
-    config = load_config()
+    config = load_config(config_path)
 
     if client_key not in config.mcp.clients:
         raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
 
     # Remove client
     del config.mcp.clients[client_key]
-    save_config(config)
+    save_config(config, config_path)
+
+    await _invalidate_mcp_runner(request, uid)
 
     return {"message": f"MCP client '{client_key}' deleted successfully"}

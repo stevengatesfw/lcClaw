@@ -26,12 +26,15 @@ from ...agents.react_agent import CoPawAgent
 from ...agents.tools import read_file, write_file, edit_file
 from ...agents.utils.token_counting import _get_token_counter
 from ...config import load_config
-from ...config.utils import get_user_working_dir
-from ...context import set_current_working_dir, reset_current_working_dir, get_context_user_id
-from ...constant import (
-    MEMORY_COMPACT_RATIO,
-    WORKING_DIR,
+from ...config.utils import (
+    copaw_storage_isolation_enabled,
+    get_effective_config_path_for_runner,
+    get_sessions_dir_for_user,
+    get_user_working_dir,
 )
+from ...context import set_current_working_dir, reset_current_working_dir, get_context_user_id
+from ..mcp import MCPClientManager
+from ...constant import MEMORY_COMPACT_RATIO, WORKING_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,9 @@ class AgentRunner(Runner):
         self.framework_type = "agentscope"
         self._chat_manager = None  # ChatManager instance (when not using factory)
         self._chat_manager_factory = None  # Callable[[str], ChatManager] for per-user
-        self._mcp_manager = None  # MCP client manager for hot-reload
+        self._mcp_manager = None  # root MCP when not storage-isolated
+        self._mcp_managers_cache: dict[str, MCPClientManager] = {}
+        self._mcp_managers_cache_lock = asyncio.Lock()
         self._memory_manager_cache: dict[str, MemoryManager] = {}
 
     def set_chat_manager(self, chat_manager_or_factory):
@@ -74,7 +79,8 @@ class AgentRunner(Runner):
         if cache_key in self._memory_manager_cache:
             return self._memory_manager_cache[cache_key]
         try:
-            config = load_config()
+            cfg_path = get_effective_config_path_for_runner(user_id)
+            config = load_config(cfg_path)
             max_input_length = config.agents.running.max_input_length
             chat_model, formatter = create_model_and_formatter()
             token_counter = _get_token_counter()
@@ -106,6 +112,58 @@ class AgentRunner(Runner):
             mcp_manager: MCPClientManager instance
         """
         self._mcp_manager = mcp_manager
+
+    async def shutdown_mcp_managers_cache(self) -> None:
+        """Close per-user MCP managers (storage isolation)."""
+        async with self._mcp_managers_cache_lock:
+            items = list(self._mcp_managers_cache.items())
+            self._mcp_managers_cache.clear()
+        for key, mgr in items:
+            try:
+                await mgr.close_all()
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning(
+                    "MCP manager close for user %s failed: %s",
+                    key,
+                    e,
+                )
+
+    async def invalidate_mcp_cache_for_user(self, user_id: str) -> None:
+        """Reload MCP on next query after user config change."""
+        uid = user_id or "default"
+        async with self._mcp_managers_cache_lock:
+            mgr = self._mcp_managers_cache.pop(uid, None)
+        if mgr is not None:
+            try:
+                await mgr.close_all()
+            except Exception as e:  # pylint: disable=broad-except
+                logger.warning(
+                    "invalidate_mcp_cache_for_user close failed: %s",
+                    e,
+                )
+
+    async def _get_mcp_clients_for_user(self, user_id: str | None) -> list:
+        """Root manager when single-tenant; per-user lazy MCP when isolated."""
+        if not copaw_storage_isolation_enabled():
+            if self._mcp_manager is not None:
+                return await self._mcp_manager.get_clients()
+            return []
+        uid = user_id or "default"
+        mgr = self._mcp_managers_cache.get(uid)
+        if mgr is None:
+            async with self._mcp_managers_cache_lock:
+                mgr = self._mcp_managers_cache.get(uid)
+                if mgr is None:
+                    cfg_path = get_effective_config_path_for_runner(user_id)
+                    cfg = load_config(cfg_path)
+                    mgr = MCPClientManager()
+                    if hasattr(cfg, "mcp"):
+                        try:
+                            await mgr.init_from_config(cfg.mcp)
+                        except Exception:
+                            logger.exception("MCP init failed for user %s", uid)
+                    self._mcp_managers_cache[uid] = mgr
+        return await mgr.get_clients()
 
     async def query_handler(
         self,
@@ -158,14 +216,12 @@ class AgentRunner(Runner):
                 working_dir=str(user_working_dir),
             )
 
-            # Get MCP clients from manager (hot-reloadable)
-            mcp_clients = []
-            if self._mcp_manager is not None:
-                mcp_clients = await self._mcp_manager.get_clients()
+            mcp_clients = await self._get_mcp_clients_for_user(user_id)
 
             memory_manager = await self._get_memory_manager(user_id)
 
-            config = load_config()
+            cfg_path = get_effective_config_path_for_runner(user_id)
+            config = load_config(cfg_path)
             max_iters = config.agents.running.max_iters
             max_input_length = config.agents.running.max_input_length
 
@@ -278,7 +334,7 @@ class AgentRunner(Runner):
                 "using existing environment variables",
             )
 
-        session_dir = str(WORKING_DIR / "sessions")
+        session_dir = str(get_sessions_dir_for_user(None))
         self.session = SafeJSONSession(save_dir=session_dir)
 
         # MemoryManager is now lazy-created per user in query_handler
@@ -295,3 +351,4 @@ class AgentRunner(Runner):
                     "MemoryManager close for user %s failed: %s", cache_key, e
                 )
         self._memory_manager_cache.clear()
+        await self.shutdown_mcp_managers_cache()

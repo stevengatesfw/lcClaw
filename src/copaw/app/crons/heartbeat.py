@@ -10,14 +10,16 @@ import asyncio
 import logging
 import re
 from datetime import datetime, time
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from ...config import (
+from ...config import load_config
+from ...config.utils import (
     get_heartbeat_config,
+    get_heartbeat_config_from_path,
     get_heartbeat_query_path,
-    load_config,
 )
-from ...constant import HEARTBEAT_TARGET_LAST
+from ...constant import HEARTBEAT_FILE, HEARTBEAT_TARGET_LAST
 
 logger = logging.getLogger(__name__)
 
@@ -77,18 +79,35 @@ async def run_heartbeat_once(
     *,
     runner: Any,
     channel_manager: Any,
+    config_path: Optional[Path] = None,
+    heartbeat_query_path: Optional[Path] = None,
+    heartbeat_user_id: Optional[str] = None,
 ) -> None:
     """
     Run one heartbeat: read HEARTBEAT.md via config path, run agent,
     optionally dispatch to last channel (target=last).
+
+    When *config_path* is set (per-user storage isolation), load config and
+    HEARTBEAT.md from that user's tree; *heartbeat_user_id* is used as
+    ``user_id`` in the agent request (defaults to ``main``).
     """
-    config = load_config()
-    hb = get_heartbeat_config()
+    if config_path is not None:
+        config = load_config(config_path)
+        hb = get_heartbeat_config_from_path(config_path)
+    else:
+        config = load_config()
+        hb = get_heartbeat_config()
+
     if not _in_active_hours(hb.active_hours):
         logger.debug("heartbeat skipped: outside active hours")
         return
 
-    path = get_heartbeat_query_path()
+    if heartbeat_query_path is not None:
+        path = heartbeat_query_path
+    elif config_path is not None:
+        path = config_path.parent / HEARTBEAT_FILE
+    else:
+        path = get_heartbeat_query_path()
     if not path.is_file():
         logger.debug("heartbeat skipped: no file at %s", path)
         return
@@ -97,6 +116,8 @@ async def run_heartbeat_once(
     if not query_text:
         logger.debug("heartbeat skipped: empty query file")
         return
+
+    uid = (heartbeat_user_id or "main").strip() or "main"
 
     # Build request: single user message with query text
     req: Dict[str, Any] = {
@@ -107,7 +128,7 @@ async def run_heartbeat_once(
             },
         ],
         "session_id": "main",
-        "user_id": "main",
+        "user_id": uid,
     }
 
     target = (hb.target or "").strip().lower()
