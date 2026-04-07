@@ -67,7 +67,9 @@ export function isTrustedLcagentAuthMessage(event: MessageEvent): boolean {
   if (origin === window.location.origin) {
     return true;
   }
-  const raw = import.meta.env.VITE_LCAGENT_ALLOWED_ORIGINS as string | undefined;
+  const raw = import.meta.env.VITE_LCAGENT_ALLOWED_ORIGINS as
+    | string
+    | undefined;
   if (!raw?.trim()) {
     return false;
   }
@@ -80,7 +82,6 @@ export function isTrustedLcagentAuthMessage(event: MessageEvent): boolean {
   }
   return event.source === window.parent;
 }
-
 
 /** LCAgent 控制台与 iframe 内 CoPaw 同域时写入的 key，与 lcagent-k8s front 一致 */
 const LCAGENT_CONSOLE_TOKEN_KEY = "console_token";

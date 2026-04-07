@@ -4,17 +4,19 @@ import {
   Card,
   Form,
   InputNumber,
-  message,
   Select,
   Switch,
 } from "@agentscope-ai/design";
+import { useAppMessage } from "../../../hooks/useAppMessage";
 import { TimePicker } from "antd";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import { useTranslation } from "react-i18next";
 import api from "../../../api";
+import { useAgentStore } from "../../../stores/agentStore";
 import type { HeartbeatConfig } from "../../../api/types/heartbeat";
 import { parseEvery, serializeEvery, type EveryUnit } from "./parseEvery";
+import { PageHeader } from "@/components/PageHeader";
 import styles from "./index.module.less";
 
 dayjs.extend(customParseFormat);
@@ -68,9 +70,11 @@ const EVERY_UNIT_OPTIONS: { value: EveryUnit; labelKey: string }[] = [
 
 function HeartbeatPage() {
   const { t } = useTranslation();
+  const { selectedAgent } = useAgentStore();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<HeartbeatFormValues>();
+  const { message } = useAppMessage();
 
   const fetchConfig = async () => {
     setLoading(true);
@@ -96,7 +100,8 @@ function HeartbeatPage() {
 
   useEffect(() => {
     fetchConfig();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgent]);
 
   const onFinish = async (values: HeartbeatFormValues) => {
     const every =
@@ -135,8 +140,9 @@ function HeartbeatPage() {
   if (loading) {
     return (
       <div className={styles.heartbeatPage}>
-        <h1 className={styles.title}>{t("heartbeat.title")}</h1>
-        <p className={styles.description}>{t("heartbeat.description")}</p>
+        <PageHeader
+          items={[{ title: t("nav.control") }, { title: t("heartbeat.title") }]}
+        />
         <span className={styles.description}>{t("common.loading")}</span>
       </div>
     );
@@ -144,118 +150,120 @@ function HeartbeatPage() {
 
   return (
     <div className={styles.heartbeatPage}>
-      <h1 className={styles.title}>{t("heartbeat.title")}</h1>
-      <p className={styles.description}>{t("heartbeat.description")}</p>
-
-      <Card className={styles.card}>
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={onFinish}
-          initialValues={{
-            enabled: false,
-            everyNumber: 6,
-            everyUnit: "h",
-            target: "main",
-            useActiveHours: false,
-            activeHoursStart: "08:00",
-            activeHoursEnd: "22:00",
-          }}
-        >
-          <Form.Item
-            name="enabled"
-            label={t("heartbeat.enabled")}
-            valuePropName="checked"
+      <PageHeader
+        items={[{ title: t("nav.control") }, { title: t("heartbeat.title") }]}
+      />
+      <div className={styles.heartbeatContent}>
+        <Card className={styles.card}>
+          <Form
+            form={form}
+            layout="vertical"
+            onFinish={onFinish}
+            initialValues={{
+              enabled: false,
+              everyNumber: 6,
+              everyUnit: "h",
+              target: "main",
+              useActiveHours: false,
+              activeHoursStart: "08:00",
+              activeHoursEnd: "22:00",
+            }}
           >
-            <Switch />
-          </Form.Item>
+            <Form.Item
+              name="enabled"
+              label={t("heartbeat.enabled")}
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
 
-          <Form.Item
-            label={t("heartbeat.every")}
-            required
-            className={styles.everyField}
-          >
-            <div className={styles.everyRow}>
-              <Form.Item
-                name="everyNumber"
-                rules={[
-                  { required: true, message: t("heartbeat.everyRequired") },
-                  {
-                    type: "number",
-                    min: 1,
-                    message: t("heartbeat.everyMin"),
-                  },
-                ]}
-                noStyle
-              >
-                <InputNumber min={1} className={styles.everyNumber} />
-              </Form.Item>
-              <Form.Item name="everyUnit" noStyle>
-                <Select
-                  options={EVERY_UNIT_OPTIONS.map((opt) => ({
-                    value: opt.value,
-                    label: t(opt.labelKey),
-                  }))}
-                  className={styles.everyUnit}
-                />
-              </Form.Item>
-            </div>
-          </Form.Item>
+            <Form.Item
+              label={t("heartbeat.every")}
+              required
+              className={styles.everyField}
+            >
+              <div className={styles.everyRow}>
+                <Form.Item
+                  name="everyNumber"
+                  rules={[
+                    { required: true, message: t("heartbeat.everyRequired") },
+                    {
+                      type: "number",
+                      min: 1,
+                      message: t("heartbeat.everyMin"),
+                    },
+                  ]}
+                  noStyle
+                >
+                  <InputNumber min={1} className={styles.everyNumber} />
+                </Form.Item>
+                <Form.Item name="everyUnit" noStyle>
+                  <Select
+                    options={EVERY_UNIT_OPTIONS.map((opt) => ({
+                      value: opt.value,
+                      label: t(opt.labelKey),
+                    }))}
+                    className={styles.everyUnit}
+                  />
+                </Form.Item>
+              </div>
+            </Form.Item>
 
-          <Form.Item
-            name="target"
-            label={t("heartbeat.target")}
-            rules={[{ required: true }]}
-          >
-            <Select
-              options={TARGET_OPTIONS.map((opt) => ({
-                value: opt.value,
-                label: t(opt.labelKey),
-              }))}
-            />
-          </Form.Item>
+            <Form.Item
+              name="target"
+              label={t("heartbeat.target")}
+              rules={[{ required: true }]}
+            >
+              <Select
+                options={TARGET_OPTIONS.map((opt) => ({
+                  value: opt.value,
+                  label: t(opt.labelKey),
+                }))}
+              />
+            </Form.Item>
 
-          <Form.Item
-            name="useActiveHours"
-            label={t("heartbeat.activeHours")}
-            valuePropName="checked"
-          >
-            <Switch />
-          </Form.Item>
+            <Form.Item
+              name="useActiveHours"
+              label={t("heartbeat.activeHours")}
+              valuePropName="checked"
+            >
+              <Switch />
+            </Form.Item>
 
-          <Form.Item
-            noStyle
-            shouldUpdate={(prev, cur) =>
-              prev.useActiveHours !== cur.useActiveHours
-            }
-          >
-            {({ getFieldValue }) =>
-              getFieldValue("useActiveHours") ? (
-                <div className={styles.activeHoursRow}>
-                  <Form.Item
-                    name="activeHoursStart"
-                    label={t("heartbeat.activeStart")}
-                  >
-                    <TimePickerHHmm />
-                  </Form.Item>
-                  <Form.Item
-                    name="activeHoursEnd"
-                    label={t("heartbeat.activeEnd")}
-                  >
-                    <TimePickerHHmm />
-                  </Form.Item>
-                </div>
-              ) : null
-            }
-          </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) =>
+                prev.useActiveHours !== cur.useActiveHours
+              }
+            >
+              {({ getFieldValue }) =>
+                getFieldValue("useActiveHours") ? (
+                  <div className={styles.activeHoursRow}>
+                    <Form.Item
+                      name="activeHoursStart"
+                      label={t("heartbeat.activeStart")}
+                    >
+                      <TimePickerHHmm />
+                    </Form.Item>
+                    <Form.Item
+                      name="activeHoursEnd"
+                      label={t("heartbeat.activeEnd")}
+                    >
+                      <TimePickerHHmm />
+                    </Form.Item>
+                  </div>
+                ) : null
+              }
+            </Form.Item>
 
-          <Form.Item className={styles.formActions}>
-            <Button type="primary" htmlType="submit" loading={saving}>
-              {t("common.save")}
-            </Button>
-          </Form.Item>
-        </Form>
-      </Card>
+            <Form.Item className={styles.formActions}>
+              <Button type="primary" htmlType="submit" loading={saving}>
+                {t("common.save")}
+              </Button>
+            </Form.Item>
+          </Form>
+        </Card>
+      </div>
     </div>
   );
 }

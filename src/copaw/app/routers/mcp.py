@@ -6,11 +6,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path as PathParam, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path as PathParam,
+    Request,
+)
 from pydantic import BaseModel, Field
 
+from ..utils import schedule_agent_reload
 from ...config import load_config, save_config
-from ...config.config import MCPClientConfig
+from ...config.config import MCPClientConfig, MCPConfig, save_agent_config
 from ...config.utils import copaw_storage_isolation_enabled
 from ..auth import get_current_user_id_required
 from ..storage_deps import get_storage_config_path
@@ -141,6 +149,20 @@ class MCPClientUpdateRequest(BaseModel):
     )
 
 
+def _restore_original_values(
+    incoming: Dict[str, str],
+    existing: Dict[str, str],
+) -> Dict[str, str]:
+    """Preserve original values when incoming matches their masked form."""
+    restored: Dict[str, str] = {}
+    for k, v in incoming.items():
+        if k in existing and v == _mask_env_value(existing[k]):
+            restored[k] = existing[k]
+        else:
+            restored[k] = v
+    return restored
+
+
 def _mask_env_value(value: str) -> str:
     """
     Mask environment variable value showing first 2-3 chars and last 4 chars.
@@ -207,13 +229,23 @@ def _build_client_info(key: str, client: MCPClientConfig) -> MCPClientInfo:
     summary="List all MCP clients",
 )
 async def list_mcp_clients(
+    request: Request,
     config_path: Path = Depends(get_storage_config_path),
 ) -> List[MCPClientInfo]:
     """Get list of all configured MCP clients."""
-    config = load_config(config_path)
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        mcp_config = config.mcp
+    else:
+        from ..agent_context import get_agent_for_request
+
+        agent = await get_agent_for_request(request)
+        mcp_config = agent.config.mcp
+    if mcp_config is None or not mcp_config.clients:
+        return []
     return [
         _build_client_info(key, client)
-        for key, client in config.mcp.clients.items()
+        for key, client in mcp_config.clients.items()
     ]
 
 
@@ -223,12 +255,24 @@ async def list_mcp_clients(
     summary="Get MCP client details",
 )
 async def get_mcp_client(
+    request: Request,
     client_key: str = PathParam(...),
     config_path: Path = Depends(get_storage_config_path),
 ) -> MCPClientInfo:
     """Get details of a specific MCP client."""
-    config = load_config(config_path)
-    client = config.mcp.clients.get(client_key)
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        client = config.mcp.clients.get(client_key)
+    else:
+        from ..agent_context import get_agent_for_request
+
+        agent = await get_agent_for_request(request)
+        if agent.config.mcp is None:
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        client = agent.config.mcp.clients.get(client_key)
     if client is None:
         raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
     return _build_client_info(client_key, client)
@@ -248,10 +292,21 @@ async def create_mcp_client(
     uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Create a new MCP client configuration."""
-    config = load_config(config_path)
+    from ..agent_context import get_agent_for_request
+
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        if config.mcp is None:
+            config.mcp = MCPConfig(clients={})
+        clients = config.mcp.clients
+    else:
+        agent = await get_agent_for_request(request)
+        if agent.config.mcp is None:
+            agent.config.mcp = MCPConfig(clients={})
+        clients = agent.config.mcp.clients
 
     # Check if client already exists
-    if client_key in config.mcp.clients:
+    if client_key in clients:
         raise HTTPException(
             400,
             detail=f"MCP client '{client_key}' already exists. Use PUT to "
@@ -272,11 +327,13 @@ async def create_mcp_client(
         cwd=client.cwd,
     )
 
-    # Add to config and save
-    config.mcp.clients[client_key] = new_client
-    save_config(config, config_path)
-
-    await _invalidate_mcp_runner(request, uid)
+    clients[client_key] = new_client
+    if copaw_storage_isolation_enabled():
+        save_config(config, config_path)
+        await _invalidate_mcp_runner(request, uid)
+    else:
+        save_agent_config(agent.agent_id, agent.config)
+        schedule_agent_reload(request, agent.agent_id)
 
     return _build_client_info(client_key, new_client)
 
@@ -294,31 +351,54 @@ async def update_mcp_client(
     uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Update an existing MCP client configuration."""
-    config = load_config(config_path)
+    from ..agent_context import get_agent_for_request
 
-    # Check if client exists
-    existing = config.mcp.clients.get(client_key)
-    if existing is None:
-        raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        if config.mcp is None or client_key not in config.mcp.clients:
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        existing = config.mcp.clients[client_key]
+    else:
+        agent = await get_agent_for_request(request)
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        existing = agent.config.mcp.clients[client_key]
 
-    # Update fields if provided
     update_data = updates.model_dump(exclude_unset=True)
 
-    # Special handling for env: merge with existing, don't replace
     if "env" in update_data and update_data["env"] is not None:
-        updated_env = existing.env.copy() if existing.env else {}
-        updated_env.update(update_data["env"])
-        update_data["env"] = updated_env
+        update_data["env"] = _restore_original_values(
+            update_data["env"],
+            existing.env or {},
+        )
+
+    if "headers" in update_data and update_data["headers"] is not None:
+        update_data["headers"] = _restore_original_values(
+            update_data["headers"],
+            existing.headers or {},
+        )
 
     merged_data = existing.model_dump(mode="json")
     merged_data.update(update_data)
     updated_client = MCPClientConfig.model_validate(merged_data)
-    config.mcp.clients[client_key] = updated_client
 
-    # Save updated config
-    save_config(config, config_path)
-
-    await _invalidate_mcp_runner(request, uid)
+    if copaw_storage_isolation_enabled():
+        config.mcp.clients[client_key] = updated_client
+        save_config(config, config_path)
+        await _invalidate_mcp_runner(request, uid)
+    else:
+        agent.config.mcp.clients[client_key] = updated_client
+        save_agent_config(agent.agent_id, agent.config)
+        schedule_agent_reload(request, agent.agent_id)
 
     return _build_client_info(client_key, updated_client)
 
@@ -335,17 +415,36 @@ async def toggle_mcp_client(
     uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
     """Toggle the enabled status of an MCP client."""
-    config = load_config(config_path)
+    from ..agent_context import get_agent_for_request
 
-    client = config.mcp.clients.get(client_key)
-    if client is None:
-        raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        if config.mcp is None or client_key not in config.mcp.clients:
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        client = config.mcp.clients[client_key]
+    else:
+        agent = await get_agent_for_request(request)
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        client = agent.config.mcp.clients[client_key]
 
-    # Toggle enabled status
     client.enabled = not client.enabled
-    save_config(config, config_path)
 
-    await _invalidate_mcp_runner(request, uid)
+    if copaw_storage_isolation_enabled():
+        save_config(config, config_path)
+        await _invalidate_mcp_runner(request, uid)
+    else:
+        save_agent_config(agent.agent_id, agent.config)
+        schedule_agent_reload(request, agent.agent_id)
 
     return _build_client_info(client_key, client)
 
@@ -362,15 +461,30 @@ async def delete_mcp_client(
     uid: str = Depends(get_current_user_id_required),
 ) -> Dict[str, str]:
     """Delete an MCP client configuration."""
-    config = load_config(config_path)
+    from ..agent_context import get_agent_for_request
 
-    if client_key not in config.mcp.clients:
-        raise HTTPException(404, detail=f"MCP client '{client_key}' not found")
-
-    # Remove client
-    del config.mcp.clients[client_key]
-    save_config(config, config_path)
-
-    await _invalidate_mcp_runner(request, uid)
+    if copaw_storage_isolation_enabled():
+        config = load_config(config_path)
+        if config.mcp is None or client_key not in config.mcp.clients:
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        del config.mcp.clients[client_key]
+        save_config(config, config_path)
+        await _invalidate_mcp_runner(request, uid)
+    else:
+        agent = await get_agent_for_request(request)
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
+            raise HTTPException(
+                404,
+                detail=f"MCP client '{client_key}' not found",
+            )
+        del agent.config.mcp.clients[client_key]
+        save_agent_config(agent.agent_id, agent.config)
+        schedule_agent_reload(request, agent.agent_id)
 
     return {"message": f"MCP client '{client_key}' deleted successfully"}

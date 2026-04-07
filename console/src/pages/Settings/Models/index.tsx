@@ -1,14 +1,14 @@
-import { useMemo, useState } from "react";
-import { Button } from "@agentscope-ai/design";
-import { PlusOutlined } from "@ant-design/icons";
+import { useCallback, useMemo, useState } from "react";
+import { Button, Input } from "@agentscope-ai/design";
+import { PlusOutlined, SearchOutlined } from "@ant-design/icons";
 import { useProviders } from "./useProviders";
 import {
-  PageHeader,
   LoadingState,
   ProviderCard,
-  ModelsSection,
   CustomProviderModal,
+  ModelsSection,
 } from "./components";
+import { PageHeader } from "@/components/PageHeader";
 import { useTranslation } from "react-i18next";
 import type { ProviderInfo } from "../../../api/types/provider";
 import styles from "./index.module.less";
@@ -22,16 +22,31 @@ function ModelsPage() {
   const { providers, activeModels, loading, error, fetchAll } = useProviders();
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [addProviderOpen, setAddProviderOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const { regularProviders, embeddedProviders } = useMemo(() => {
+  const refreshProvidersSilently = useCallback(() => {
+    void fetchAll(false);
+  }, [fetchAll]);
+
+  const { regularProviders, localProviders } = useMemo(() => {
     const regular: ProviderInfo[] = [];
-    const embedded: ProviderInfo[] = [];
+    const local: ProviderInfo[] = [];
     for (const p of providers) {
-      if (p.is_local) embedded.push(p);
+      if (p.is_local) local.push(p);
       else regular.push(p);
     }
-    return { regularProviders: regular, embeddedProviders: embedded };
-  }, [providers]);
+    // Fuzzy search filter: match provider name (case-insensitive)
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return { regularProviders: regular, localProviders: local };
+    }
+    return {
+      regularProviders: regular.filter((p) =>
+        p.name.toLowerCase().includes(query),
+      ),
+      localProviders: local.filter((p) => p.name.toLowerCase().includes(query)),
+    };
+  }, [providers, searchQuery]);
 
   const handleMouseEnter = (providerId: string) => {
     setHoveredCard(providerId);
@@ -47,7 +62,7 @@ function ModelsPage() {
         key={provider.id}
         provider={provider}
         activeModels={activeModels}
-        onSaved={fetchAll}
+        onSaved={refreshProvidersSilently}
         isHover={hoveredCard === provider.id}
         onMouseEnter={() => handleMouseEnter(provider.id)}
         onMouseLeave={handleMouseLeave}
@@ -55,7 +70,7 @@ function ModelsPage() {
     ));
 
   return (
-    <div className={styles.page}>
+    <div className={styles.settingsPage}>
       {loading ? (
         <LoadingState message={t("models.loading")} />
       ) : error ? (
@@ -64,57 +79,81 @@ function ModelsPage() {
         <>
           {/* ---- LLM Section (top) ---- */}
           <PageHeader
-            title={t("models.llmTitle")}
-            description={t("models.llmDescription")}
+            parent={t("nav.settings")}
+            current={t("models.llmTitle")}
           />
-          <ModelsSection
-            providers={providers}
-            activeModels={activeModels}
-            onSaved={fetchAll}
-          />
+          {/* ---- Scrollable Content ---- */}
+          <div className={styles.content}>
+            <ModelsSection
+              providers={providers}
+              activeModels={activeModels}
+              onSaved={fetchAll}
+            />
+            {/* ---- Providers Section ---- */}
+            <div className={styles.providersBlock}>
+              <div className={styles.sectionHeaderRow}>
+                <PageHeader
+                  current={t("models.providersTitle")}
+                  className={styles.providersPageHeader}
+                />
+                <div className={styles.headerRight}>
+                  {/* ---- Search ---- */}
+                  <div className={styles.searchRow}>
+                    <Input
+                      placeholder={t("models.searchPlaceholder")}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onPressEnter={() => {}}
+                      className={styles.searchInput}
+                      prefix={<SearchOutlined />}
+                      allowClear
+                    />
+                    <Button
+                      type="primary"
+                      icon={<SearchOutlined />}
+                      onClick={() => fetchAll()}
+                      className={styles.searchBtn}
+                    >
+                      {t("models.search")}
+                    </Button>
+                  </div>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => setAddProviderOpen(true)}
+                    className={styles.addProviderBtn}
+                  >
+                    {t("models.addProvider")}
+                  </Button>
+                </div>
+              </div>
 
-          {/* ---- Providers Section (below) ---- */}
-          <div className={styles.providersBlock}>
-            <div className={styles.sectionHeaderRow}>
-              <PageHeader
-                title={t("models.providersTitle")}
-                description={t("models.providersDescription")}
-              />
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={() => setAddProviderOpen(true)}
-                className={styles.addProviderBtn}
-              >
-                {t("models.addProvider")}
-              </Button>
+              {localProviders.length > 0 && (
+                <div className={styles.providerGroup}>
+                  {/* <h4 className={styles.providerGroupTitle}>
+                  {t("models.localEmbedded")}
+                </h4> */}
+                  <div className={styles.providerCards}>
+                    {renderProviderCards(localProviders)}
+                  </div>
+                </div>
+              )}
+
+              {regularProviders.length > 0 && (
+                <div className={styles.providerGroup}>
+                  <div className={styles.providerCards}>
+                    {renderProviderCards(regularProviders)}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {regularProviders.length > 0 && (
-              <div className={styles.providerGroup}>
-                <div className={styles.providerCards}>
-                  {renderProviderCards(regularProviders)}
-                </div>
-              </div>
-            )}
-
-            {embeddedProviders.length > 0 && (
-              <div className={styles.providerGroup}>
-                <h4 className={styles.providerGroupTitle}>
-                  {t("models.localEmbedded")}
-                </h4>
-                <div className={styles.providerCards}>
-                  {renderProviderCards(embeddedProviders)}
-                </div>
-              </div>
-            )}
+            <CustomProviderModal
+              open={addProviderOpen}
+              onClose={() => setAddProviderOpen(false)}
+              onSaved={fetchAll}
+            />
           </div>
-
-          <CustomProviderModal
-            open={addProviderOpen}
-            onClose={() => setAddProviderOpen(false)}
-            onSaved={fetchAll}
-          />
         </>
       )}
     </div>

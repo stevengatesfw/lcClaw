@@ -6,13 +6,7 @@ in DingTalk; same for QQ, etc. If that term is new, see [Introduction](./intro).
 Two ways to configure channels:
 
 - **Console** (recommended) — In the [Console](./console) under **Control → Channels**, click a channel card, enable it and fill in credentials in the drawer. Changes take effect when you save.
-- **Edit `config.json` directly** — Default `~/.copaw/config.json` (created by `copaw init`), set `enabled: true` and fill in that platform's credentials. Saving triggers a reload without restarting the app.
-
-All channels share two fields:
-
-- **enabled** — Turn the channel on or off.
-- **bot_prefix** — Prefix for bot replies (e.g. `[BOT]`) so they're easy to spot.
-- **filter_tool_messages** — (optional, default `false`) Filter tool call and output messages from being sent to users. Set to `true` to hide tool execution details.
+- **Edit `agent.json` directly** — Agent workspace config at `~/.copaw/workspaces/{agent_id}/agent.json`, set `enabled: true` and fill in that platform's credentials. Saving triggers a reload without restarting the app.
 
 Below is how to get credentials and fill config for each channel.
 
@@ -61,32 +55,51 @@ Step-by-step:
 
 ### Link the app
 
-You can configure it either in the Console frontend or by editing `~/.copaw/config.json`.
+You can configure it either in the Console frontend or by editing the agent workspace `agent.json`.
 
 **Method 1**: Configure in the Console frontend
 
 Go to "Control→Channels", find **DingTalk**, click it, and enter the **Client ID** and **Client Secret** you just obtained.
 
-![console](https://img.alicdn.com/imgextra/i3/O1CN01i07tt61rzZUSMo5SI_!!6000000005702-2-tps-3643-1897.png)
+![console](https://img.alicdn.com/imgextra/i2/O1CN01TncUmE1TUNkR7e2ft_!!6000000002385-2-tps-3822-2064.png)
 
-**Method 2**: Edit `~/.copaw/config.json`
+**Method 2**: Edit agent workspace `agent.json`
 
-In `config.json`, find `channels.dingtalk` and fill in the corresponding information, for example:
+In your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`), find `channels.dingtalk` and fill in the corresponding information, for example:
 
 ```json
 "dingtalk": {
   "enabled": true,
   "bot_prefix": "[BOT]",
   "client_id": "your Client ID",
-  "client_secret": "your Client Secret"
+  "client_secret": "your Client Secret",
+  "message_type": "markdown",
+  "card_template_id": "",
+  "card_template_key": "content",
+  "robot_code": "",
   "filter_tool_messages": false
 }
 ```
 
-- Set `filter_tool_messages: true` if you want to hide tool execution details in the chat.
+**DingTalk-specific fields:**
 
-Save the file; if the app is already running, the channel will reload. Otherwise run
-`copaw app`.
+| Field               | Type   | Default         | Description                                                                                                      |
+| ------------------- | ------ | --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `client_id`         | string | `""` (required) | DingTalk app Client ID (AppKey)                                                                                  |
+| `client_secret`     | string | `""` (required) | DingTalk app Client Secret (AppSecret)                                                                           |
+| `message_type`      | string | `"markdown"`    | Message mode: `"markdown"` (default) or `"card"` (AI interactive card)                                           |
+| `card_template_id`  | string | `""`            | DingTalk AI Card template ID (required when `message_type` is `card`)                                            |
+| `card_template_key` | string | `"content"`     | AI Card variable key; must exactly match your template variable name                                             |
+| `robot_code`        | string | `""`            | Robot code (recommended explicit config for group card delivery scenarios; falls back to `client_id` when empty) |
+| `media_dir`         | string | `null`          | Media file download directory (leave empty to not save)                                                          |
+
+> **Tips:**
+>
+> - Set `filter_tool_messages: true` if you want to hide tool execution details in the chat.
+> - AI Card mode: set `message_type` to `card`, then configure `card_template_id`; keep `card_template_key` consistent with your DingTalk template variable (default `content`).
+> - `robot_code` is recommended in group scenarios; if empty, CoPaw falls back to `client_id`.
+
+Save the file; if the app is already running, the channel will reload. Otherwise run `copaw app`.
 
 ### Find the created app
 
@@ -128,9 +141,9 @@ The Feishu channel receives messages via **WebSocket long connection** (no publi
 
 ![ID & Secret](https://img.alicdn.com/imgextra/i2/O1CN01XISo4K2A9nPrMUT4f_!!6000000008161-2-tps-4082-2126.png)
 
-3. Fill **App ID** and **App Secret** in `config.json` (see "Fill config.json" below) and save
+3. Fill **App ID** and **App Secret** in `agent.json` (see "Fill agent.json" below) and save
 
-4. Run **`copaw app`** to start CoPAW
+4. Run **`copaw app`** to start CoPaw
 
 5. Back in the Feishu console, enable **Bot** under **Add Features**
 
@@ -174,7 +187,7 @@ The Feishu channel receives messages via **WebSocket long connection** (no publi
 
 ![WebSocket](https://img.alicdn.com/imgextra/i3/O1CN01XdU7hK1fVY8gIDhZK_!!6000000004012-2-tps-4082-2126.png)
 
-8. Select **Add Events**, search for **Message reveived**, and subscribe to **Message received v2.0**
+8. Select **Add Events**, search for **Message received**, and subscribe to **Message received v2.0**
 
 ![Receive](https://img.alicdn.com/imgextra/i1/O1CN01EE4iZf1CnIdDDeli6_!!6000000000125-2-tps-4082-2126.png)
 
@@ -192,23 +205,39 @@ The Feishu channel receives messages via **WebSocket long connection** (no publi
 
 ![pub](https://img.alicdn.com/imgextra/i1/O1CN01dcWI7F1PmSuniDLJx_!!6000000001883-2-tps-4082-2126.png)
 
-### Fill config.json
+### Fill agent.json
 
-Find `channels.feishu`（default as `~/.copaw/config.json`） in `config.json`. Only **App ID** and **App Secret** are required (copy from the Feishu console under Credentials & basic info):
+Find `channels.feishu` in your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`). Only **App ID** and **App Secret** are required (copy from the Feishu console under Credentials & basic info):
 
 ```json
 "feishu": {
   "enabled": true,
   "bot_prefix": "[BOT]",
   "app_id": "cli_xxxxx",
-  "app_secret": "your App Secret"
+  "app_secret": "your App Secret",
+  "domain": "feishu"
 }
 ```
 
-Other fields (encrypt_key, verification_token, media_dir) are optional; with WebSocket mode you can omit them (defaults apply). Then `pip install lark-oapi` and run `copaw app`. If your environment uses a SOCKS proxy, also install `python-socks` (for example, `pip install python-socks`), otherwise you may see: `python-socks is required to use a SOCKS proxy`.
+**Feishu-specific fields:**
+
+| Field                | Type   | Default         | Description                                    |
+| -------------------- | ------ | --------------- | ---------------------------------------------- |
+| `app_id`             | string | `""` (required) | Feishu App ID                                  |
+| `app_secret`         | string | `""` (required) | Feishu App Secret                              |
+| `domain`             | string | `"feishu"`      | `"feishu"` (China) or `"lark"` (International) |
+| `encrypt_key`        | string | `""`            | Event encryption key (optional)                |
+| `verification_token` | string | `""`            | Event verification token (optional)            |
+| `media_dir`          | string | `null`          | Directory for received media files             |
+
+> **Tip:** Other fields (encrypt_key, verification_token, media_dir) are optional; with WebSocket mode you can omit them (defaults apply).
+
+**Dependencies:** `pip install lark-oapi`
+
+If your environment uses a SOCKS proxy, also install `python-socks` (for example, `pip install python-socks`), otherwise you may see: `python-socks is required to use a SOCKS proxy`.
 
 > **Note:** You can also fill in **App ID** and **App Secret** in the Console UI, but you must restart the copaw service before continuing with the long-connection configuration.
-> ![console](https://img.alicdn.com/imgextra/i1/O1CN01JInbHT1ei5MdfkMGv_!!6000000003904-2-tps-4082-2126.png)
+> ![console](https://img.alicdn.com/imgextra/i2/O1CN01ybSbN01luB8jyt9BD_!!6000000004878-2-tps-3822-2064.png)
 
 ### Recommended bot permissions
 
@@ -229,7 +258,7 @@ The JSON in step 6 grants the following permissions (app identity) for messaging
 | Get/upload image and file resources | im:resource                    | App     | -             |
 | **Read contact as app**             | **contact:user.base:readonly** | **App** | **See below** |
 
-> **User display name (recommended):** To show **user nicknames** in sessions and logs (e.g. "张三#1d1a" instead of "unknown#1d1a"), enable the contact read permission **Read contact as app** (`contact:user.base:readonly`). Without it, Feishu only returns identity fields (e.g. open_id) and not the user's name, so CoPAW cannot resolve nicknames. After enabling, publish or update the app version so the permission takes effect.
+> **User display name (recommended):** To show **user nicknames** in sessions and logs (e.g. "张三#1d1a" instead of "unknown#1d1a"), enable the contact read permission **Read contact as app** (`contact:user.base:readonly`). Without it, Feishu only returns identity fields (e.g. open_id) and not the user's name, so CoPaw cannot resolve nicknames. After enabling, publish or update the app version so the permission takes effect.
 
 ### Add the bot to favorites
 
@@ -255,32 +284,53 @@ The JSON in step 6 grants the following permissions (app identity) for messaging
 
 The app polls the local iMessage database for new messages and sends replies on your behalf.
 
-### Prerequisites
+1. Ensure **Messages** is signed in on this Mac (open the Messages app and sign in with your Apple ID in System Settings).
 
-- Ensure **Messages** is signed in on this Mac (open the Messages app and sign in
-  with your Apple ID in System Settings).
-- Install **imsg** (used to access the iMessage database):
-  ```bash
-  brew install steipete/tap/imsg
-  ```
-- The default iMessage database path is `~/Library/Messages/chat.db`. Use this unless you've moved the database.
-- The app needs **Full Disk Access** (System Settings → Privacy & Security → Full Disk
-  Access) to read `chat.db`.
-- Everything stays on your machine; no data is sent elsewhere.
+2. Install **imsg** (used to access the iMessage database):
 
-### Fill config.json
+   ```bash
+   brew install steipete/tap/imsg
+   ```
 
-```json
-"imessage": {
-  "enabled": true,
-  "bot_prefix": "[BOT]",
-  "db_path": "~/Library/Messages/chat.db",
-  "poll_sec": 1.0
-}
-```
+   > If installation fails on Intel Mac, clone the repo and build from source:
+   >
+   > ```bash
+   > git clone https://github.com/steipete/imsg.git
+   > cd imsg
+   > make build
+   > sudo cp build/Release/imsg /usr/local/bin/
+   > cp ./bin/imsg /usr/local/bin/
+   > ```
 
-- **db_path** — Path to the iMessage database
-- **poll_sec** — Poll interval in seconds (1 is fine)
+3. For CoPaw to read iMessage data, **Terminal** (or the app you use to run `copaw app`) and **Messages** need **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access).
+
+4. Set the iMessage database path. The default is `~/Library/Messages/chat.db`; use this unless you've moved the database. You can configure it in either of these ways:
+
+   - In **Console → Channels**, click the **iMessage** card, turn **Enable** on, enter the path in **DB Path**, and click **Save**.
+
+     ![save](https://img.alicdn.com/imgextra/i2/O1CN01i0Ilrp1eSyIl9ecy5_!!6000000003871-2-tps-3822-2064.png)
+
+   - Or edit the agent workspace `agent.json` (usually at `~/.copaw/workspaces/default/agent.json`):
+
+     ```json
+     "imessage": {
+       "enabled": true,
+       "bot_prefix": "[BOT]",
+       "db_path": "~/Library/Messages/chat.db",
+       "poll_sec": 1.0
+     }
+     ```
+
+**iMessage-specific fields:**
+
+| Field      | Type   | Default                      | Description                |
+| ---------- | ------ | ---------------------------- | -------------------------- |
+| `db_path`  | string | `~/Library/Messages/chat.db` | iMessage database path     |
+| `poll_sec` | float  | `1.0`                        | Polling interval (seconds) |
+
+5. After saving, send any message from your phone to the iMessage account signed in on this Mac (same Apple ID). You should see a reply.
+
+   ![reply](https://img.alicdn.com/imgextra/i2/O1CN01btWaV21CtFmbnxFYw_!!6000000000138-2-tps-1206-2622.png)
 
 ---
 
@@ -324,17 +374,17 @@ The app polls the local iMessage database for new messages and sends replies on 
 
 ### Configure the Bot
 
-You can configure via the Console UI or by editing `~/.copaw/config.json`.
+You can configure via the Console UI or by editing the agent workspace `agent.json`.
 
 **Method 1:** Configure in the Console
 
 Go to **Control → Channels**, click **Discord**, and enter the **Bot Token** you obtained.
 
-![Console](https://img.alicdn.com/imgextra/i4/O1CN019GKk901VE0od1PU9t_!!6000000002620-2-tps-4084-2126.png)
+![Console](https://img.alicdn.com/imgextra/i1/O1CN01ChQJNp1afYixv52rv_!!6000000003357-2-tps-3822-2064.png)
 
-**Method 2:** Edit `~/.copaw/config.json`
+**Method 2:** Edit agent workspace `agent.json`
 
-Find `channels.discord` in `config.json` and fill in the fields, for example:
+Find `channels.discord` in your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`) and fill in the fields, for example:
 
 ```json
 "discord": {
@@ -346,10 +396,15 @@ Find `channels.discord` in `config.json` and fill in the fields, for example:
 }
 ```
 
-If you need a proxy (e.g. for network restrictions):
+**Discord-specific fields:**
 
-- **http_proxy** — e.g. `http://127.0.0.1:7890`
-- **http_proxy_auth** — `username:password` if the proxy requires auth, otherwise leave empty
+| Field             | Type   | Default         | Description                                                                            |
+| ----------------- | ------ | --------------- | -------------------------------------------------------------------------------------- |
+| `bot_token`       | string | `""` (required) | Discord bot token                                                                      |
+| `http_proxy`      | string | `""`            | HTTP proxy URL (useful in China)                                                       |
+| `http_proxy_auth` | string | `""`            | Proxy authentication string (format: `username:password`, leave empty if not required) |
+
+> **Tip:** Accessing the Discord API from China may require a proxy.
 
 ---
 
@@ -381,16 +436,17 @@ If you need a proxy (e.g. for network restrictions):
 
 5. In **Developer settings**, get **AppID** and **AppSecret** (ClientSecret) and fill them into config (see below). Add your server’s **IP to the whitelist** — only whitelisted IPs can call the Open API outside sandbox.
 
+   > **Tip:** If you are using ModelScope Creative Space to deploy CoPaw, the IP whitelist for QQ channel should be: `47.92.200.108`
+
 ![1](https://img.alicdn.com/imgextra/i4/O1CN012UQWI21cnvBAUcz54_!!6000000003646-2-tps-4082-2126.png)
 
 6. In sandbox config, scan the QR code with QQ to add the bot to your message list
 
 ![1](https://img.alicdn.com/imgextra/i3/O1CN01r1OvPy1kcwc30w32K_!!6000000004705-2-tps-4082-2126.png)
 
-### Fill config.json
+### Fill agent.json
 
-In `config.json`, find `channels.qq` and set `app_id` and `client_secret` to the
-values above:
+In your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`), find `channels.qq` and set `app_id` and `client_secret` to the values above:
 
 ```json
 "qq": {
@@ -401,12 +457,147 @@ values above:
 }
 ```
 
-You provide **AppID** and **AppSecret** as two separate fields; do not concatenate
-them into a single token.
+**QQ-specific fields:**
+
+| Field                    | Type   | Default         | Description                                                              |
+| ------------------------ | ------ | --------------- | ------------------------------------------------------------------------ |
+| `app_id`                 | string | `""` (required) | QQ bot App ID                                                            |
+| `client_secret`          | string | `""` (required) | QQ bot Client Secret (AppSecret)                                         |
+| `markdown_enabled`       | bool   | `false`         | Whether to enable Markdown messages (requires QQ platform authorization) |
+| `max_reconnect_attempts` | int    | `-1`            | WebSocket max reconnect attempts (`-1` = unlimited)                      |
+
+> **Note:** Fill in **AppID** and **AppSecret** as two separate fields; do not concatenate them into a single token.
 
 You can also fill them in the Console UI.
 
-![1](https://img.alicdn.com/imgextra/i1/O1CN013zS1dF1hLal9IM4rc_!!6000000004261-2-tps-4082-2126.png)
+![1](https://img.alicdn.com/imgextra/i3/O1CN01l801uc1jPpfLTOsR5_!!6000000004541-2-tps-3822-2064.png)
+
+---
+
+## WeCom (WeChat Work)
+
+### Create a new enterprise
+
+Individual users can visit the [WeCom official website](https://work.weixin.qq.com) to register an account, create a new enterprise, and become an enterprise administrator.
+
+![Create enterprise](https://img.alicdn.com/imgextra/i2/O1CN01Xg8B3i1EQWAKt5xj0_!!6000000000346-2-tps-2938-1588.png)
+
+Fill in the enterprise information and administrator information, and bind your WeChat account.
+
+![New account](https://img.alicdn.com/imgextra/i4/O1CN01uRF1Mv1TX87bOQ045_!!6000000002391-2-tps-1538-905.png)
+
+Once registered, you can log in to WeCom and start using it.
+
+If you already have a WeCom account or are a regular employee of an enterprise, you can directly create an API-mode robot in your current enterprise.
+
+### Create a bot
+
+In the Workplace, click Smart Robot → Create Robot, select API Mode → Configure via Long Connection.
+
+![Create robot 1](https://img.alicdn.com/imgextra/i3/O1CN01lcA2rX1fm2P19SLcB_!!6000000004048-2-tps-1440-814.png)
+
+![Create robot 2](https://img.alicdn.com/imgextra/i1/O1CN014R3a0f1mnb3qbycMV_!!6000000004999-2-tps-1440-814.png)
+
+![Create robot 3](https://img.alicdn.com/imgextra/i4/O1CN01kZDNVk1ugHf73ybs2_!!6000000006066-2-tps-2938-1594.png)
+
+Obtain the `Bot ID` and `Secret`.
+
+![Create robot 4](https://img.alicdn.com/imgextra/i1/O1CN01Znm7aQ1Tfpe5Ha9WL_!!6000000002410-2-tps-1482-992.png)
+
+### Bind the bot
+
+You can bind the bot by filling in the Bot ID and Secret in the Console or `agent.json`.
+
+**Method 1:** Fill in the Console
+
+![Bind robot](https://img.alicdn.com/imgextra/i3/O1CN01ZZeM111FXDa0GoZUN_!!6000000000496-2-tps-3822-2064.png)
+
+**Method 2:** Fill in `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`)
+
+Find `wecom` and fill in the corresponding information, for example:
+
+```json
+"wecom": {
+  "enabled": true,
+  "bot_prefix": "[BOT]",
+  "dm_policy": "open",
+  "group_policy": "open",
+  "bot_id": "your bot_id",
+  "secret": "your secret",
+  "media_dir": "~/.copaw/media",
+  "max_reconnect_attempts": -1
+}
+```
+
+**WeCom-specific fields:**
+
+| Field                    | Type   | Default          | Description                                          |
+| ------------------------ | ------ | ---------------- | ---------------------------------------------------- |
+| `bot_id`                 | string | `""` (required)  | WeCom bot ID                                         |
+| `secret`                 | string | `""` (required)  | WeCom bot secret                                     |
+| `media_dir`              | string | `~/.copaw/media` | Media files (images, files, etc.) download directory |
+| `max_reconnect_attempts` | int    | `-1`             | WebSocket max reconnect attempts (`-1` = unlimited)  |
+
+### Start chatting with the bot in WeCom
+
+![Start using](https://img.alicdn.com/imgextra/i3/O1CN01ZsmpYr1tq4ViIbO80_!!6000000005952-2-tps-1308-1130.png)
+
+---
+
+## WeChat Personal (iLink)
+
+The WeChat iLink Bot channel lets you run an AI bot via a **personal WeChat account** — no enterprise account required — using the official [iLink Bot HTTP API](https://weixin.qq.com/cgi-bin/readtemplate?t=ilink/chatbot) protocol.
+
+> **Note**: WeChat personal bots (iLink protocol) are currently in limited beta. You need to apply for access before using this feature.
+
+### How it works
+
+- **Authentication**: On first use, scan a QR code to authorize. The token is automatically persisted to a local file (default `~/.copaw/weixin_bot_token`), so you won't need to scan again on subsequent starts.
+- **Receiving messages**: Uses HTTP long-polling (`getupdates`) to continuously fetch new messages. Supports text, images, voice (ASR transcription), files, and videos.
+- **Sending messages**: Replies via `sendmessage`. Currently only text is supported (iLink API limitation).
+
+### QR code login (recommended via Console)
+
+1. Open the CoPaw Web Console and go to **Settings → Channels → WeChat Personal (iLink)**.
+2. Click **Get Login QR Code** and wait for the QR code to appear.
+3. Scan the QR code with your WeChat mobile app and confirm authorization.
+4. Once confirmed, the Bot Token is automatically filled in the form — click **Save**.
+
+### Configure via config file
+
+You can also configure directly in the agent workspace `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`):
+
+```json
+"weixin": {
+  "enabled": true,
+  "bot_token": "your_bot_token",
+  "bot_token_file": "~/.copaw/weixin_bot_token",
+  "base_url": "",
+  "media_dir": "~/.copaw/media",
+  "dm_policy": "open",
+  "group_policy": "open"
+}
+```
+
+**WeChat Personal-specific fields:**
+
+| Field            | Type   | Default                     | Description                                                                           |
+| ---------------- | ------ | --------------------------- | ------------------------------------------------------------------------------------- |
+| `bot_token`      | string | `""`                        | Bearer token obtained after QR code login; leave empty to trigger QR login on startup |
+| `bot_token_file` | string | `~/.copaw/weixin_bot_token` | Path to persist the token for future runs                                             |
+| `base_url`       | string | official default            | iLink API base URL; leave empty to use the official default                           |
+| `media_dir`      | string | `~/.copaw/media`            | Directory to save received images and files                                           |
+
+### Configure via environment variables
+
+```bash
+WEIXIN_CHANNEL_ENABLED=1
+WEIXIN_BOT_TOKEN=your_bot_token
+WEIXIN_BOT_TOKEN_FILE=~/.copaw/weixin_bot_token
+WEIXIN_MEDIA_DIR=~/.copaw/media
+WEIXIN_DM_POLICY=open
+WEIXIN_GROUP_POLICY=open
+```
 
 ---
 
@@ -425,17 +616,17 @@ You can also fill them in the Console UI.
 
 ### Configure the Bot
 
-You can configure via the Console UI or by editing `~/.copaw/config.json`.
+You can configure via the Console UI or by editing the agent workspace `agent.json`.
 
 **Method 1:** Configure in the Console
 
 Go to **Control → Channels**, click **Telegram**, and enter the **Bot Token** you obtained.
 
-![Console](https://img.alicdn.com/imgextra/i4/O1CN01utJvvg1dmNSiFOOJi_!!6000000003778-0-tps-1920-993.jpg)
+![Console](https://img.alicdn.com/imgextra/i3/O1CN01Ps7Odl1a35SETdKna_!!6000000003273-2-tps-3822-2064.png)
 
-**Method 2:** Edit `~/.copaw/config.json`
+**Method 2:** Edit agent workspace `agent.json`
 
-Find `channels.telegram` in `config.json` and fill in the fields, for example:
+Find `channels.telegram` in your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`) and fill in the fields, for example:
 
 ```json
 "telegram": {
@@ -447,14 +638,19 @@ Find `channels.telegram` in `config.json` and fill in the fields, for example:
 }
 ```
 
-If you need a proxy to access the Telegram API (e.g. for network restrictions):
+**Telegram-specific fields:**
 
-- **http_proxy** — e.g. `http://127.0.0.1:7890`
-- **http_proxy_auth** — `username:password` if the proxy requires auth, otherwise leave empty
+| Field             | Type   | Default         | Description                                                                     |
+| ----------------- | ------ | --------------- | ------------------------------------------------------------------------------- |
+| `bot_token`       | string | `""` (required) | Telegram Bot Token                                                              |
+| `http_proxy`      | string | `""`            | Proxy address (e.g., `http://127.0.0.1:7890`)                                   |
+| `http_proxy_auth` | string | `""`            | Proxy authentication (format: `username:password`, leave empty if not required) |
+
+> **Tip:** Accessing the Telegram API from China may require a proxy.
 
 ### Notes
 
-The Telegram whitelist mechanism is still under construction. It is recommended to deploy for personal use only and avoid exposing your bot username publicly.
+To control who can interact with the bot, use the common access control fields (`dm_policy`, `group_policy`, `allow_from`, `deny_message`, `require_mention`) described at the top of this page. It is still recommended to avoid exposing your bot username publicly.
 
 It is recommended to configure the following in `@BotFather`:
 
@@ -465,20 +661,358 @@ It is recommended to configure the following in `@BotFather`:
 
 ---
 
+## Mattermost
+
+The Mattermost channel uses WebSockets for real-time monitoring and REST APIs for replies. It supports both direct messages and group chats, using **Threads** to isolate conversation contexts in channels.
+
+### Get credentials
+
+1. Create a **Bot Account** in Mattermost (System Console → Integrations → Bot Accounts).
+2. Grant necessary permissions (e.g., `Post all`) and obtain the **Access Token**.
+3. Configure the **URL** and **Token** in the Console or `config.json`.
+
+### Core Config
+
+**Mattermost-specific fields:**
+
+| Field                           | Type   | Default         | Description                                                               |
+| ------------------------------- | ------ | --------------- | ------------------------------------------------------------------------- |
+| `url`                           | string | `""` (required) | Full URL of your Mattermost instance                                      |
+| `bot_token`                     | string | `""` (required) | Bot Access Token                                                          |
+| `show_typing`                   | bool   | `true`          | Whether to show the "typing..." indicator                                 |
+| `thread_follow_without_mention` | bool   | `false`         | Whether to respond without @mention in threads the bot has already joined |
+
+> **Note**: The `session_id` for Mattermost is fixed as `mattermost_dm:{mm_channel_id}` for DMs and isolated by Thread ID for group chats. Recent history is automatically fetched as context supplement only upon the first trigger of a session.
+
+---
+
+## MQTT
+
+### About
+
+Currently, only text and JSON format messages are supported.
+
+JSON message format
+
+```
+{
+  "text": "...",
+  "redirect_client_id": "..."
+}
+```
+
+### Basic Configuration
+
+| Description     | Field           | Required field | Example                 |
+| --------------- | --------------- | -------------- | ----------------------- |
+| MQTT Host       | host            | Y              | 127.0.0.1               |
+| MQTT Port       | port            | Y              | 1883                    |
+| Transport       | transport       | Y              | tcp                     |
+| Clean Session   | clean_session   | Y              | true                    |
+| QoS             | qos             | Y              | 2                       |
+| MQTT Username   | username        | N              |                         |
+| MQTT Password   | password        | N              |                         |
+| Subscribe Topic | subscribe_topic | Y              | server/+/up             |
+| Publish Topic   | publish_topic   | Y              | client/{client_id}/down |
+| TLS Enabled     | tls_enabled     | N              | false                   |
+| TLS CA Certs    | tls_ca_certs    | N              | /tsl/ca.pem             |
+| TLS Certfile    | tls_certfile    | N              | /tsl/client.pem         |
+| TLS Keyfile     | tls_keyfile     | N              | /tsl/client.key         |
+
+### Topic
+
+1. Simple subscription and push
+
+   | subscribe_topic | publish_topic |
+   | --------------- | ------------- |
+   | server          | client        |
+
+2. Fuzzy match subscription and automatic push
+
+   Subscribe to the wildcard topic `/server/+/up`. Messages will be automatically pushed to the corresponding topic based on the client's `client_id`. For example, after a client pushes a message to `/server/client_a/up`, CoPaw will push the message to `/client/client_b/down` after processing.
+
+   | subscribe_topic | publish_topic           |
+   | --------------- | ----------------------- |
+   | server/+/up     | client/{client_id}/down |
+
+3. Redirected topic push
+
+   The message sent is in JSON format. The subscription topic is `server/client_a/up`, and the push topic is `client/client_a/down`.
+
+   ```json
+   {
+     "text": "Tell me a joke, return the result in plain text",
+     "redirect_client_id": "client_b"
+   }
+   ```
+
+   Messages will be pushed to `client/client_b/down` based on the `redirect_client_id` attribute, enabling cross-topic push. In IoT scenarios, with CoPaw as the core, autonomous message pushing between multiple devices can be achieved according to individual requirements.
+
+---
+
+## Matrix
+
+The Matrix channel connects CoPaw to any Matrix homeserver using the [matrix-nio](https://github.com/poljar/matrix-nio) library. It supports text messaging in both direct messages and group rooms.
+
+### Create a Matrix bot account and get an access token
+
+1. Create a bot account on any Matrix homeserver (e.g. [matrix.org](https://matrix.org) — register at [app.element.io](https://app.element.io/#/register)).
+
+2. Get the bot's **access token**. The easiest way is via Element:
+
+   - Log in as the bot account at [app.element.io](https://app.element.io)
+   - Go to **Settings → Help & About → Advanced → Access Token**
+   - Copy the token (it starts with `syt_...`)
+
+   Alternatively, use the Matrix Client-Server API directly:
+
+   ```bash
+   curl -X POST "https://matrix.org/_matrix/client/v3/login" \
+     -H "Content-Type: application/json" \
+     -d '{"type":"m.login.password","user":"@yourbot:matrix.org","password":"yourpassword"}'
+   ```
+
+   The response includes `access_token`.
+
+3. Note your bot's **User ID** (format: `@username:homeserver`, e.g. `@mybot:matrix.org`) and the **Homeserver URL** (e.g. `https://matrix.org`).
+
+### Configure the channel
+
+**Method 1:** Configure in the Console
+
+Go to **Control → Channels**, click **Matrix**, enable it, and fill in:
+
+- **Homeserver URL** — e.g. `https://matrix.org`
+- **User ID** — e.g. `@mybot:matrix.org`
+- **Access Token** — the token you copied above (shown as a password field)
+
+**Method 2:** Edit agent workspace `agent.json`
+
+Find `channels.matrix` in your agent's `agent.json` (e.g., `~/.copaw/workspaces/default/agent.json`):
+
+```json
+"matrix": {
+  "enabled": true,
+  "bot_prefix": "[BOT]",
+  "homeserver": "https://matrix.org",
+  "user_id": "@mybot:matrix.org",
+  "access_token": "syt_..."
+}
+```
+
+**Matrix-specific fields:**
+
+| Field          | Type   | Default         | Description                                        |
+| -------------- | ------ | --------------- | -------------------------------------------------- |
+| `homeserver`   | string | `""` (required) | Matrix server address (e.g., `https://matrix.org`) |
+| `user_id`      | string | `""` (required) | Bot User ID (e.g., `@mybot:matrix.org`)            |
+| `access_token` | string | `""` (required) | Bot access token (starts with `syt_`)              |
+
+Save the file; the channel will reload automatically if CoPaw is already running.
+
+### Chat with the bot
+
+Invite the bot to a room or send it a direct message from any Matrix client (e.g. Element). The bot listens for messages in all rooms it has joined.
+
+### Notes
+
+- Matrix supports multimodal messages (text, images, videos, audio, and files). Attachments are received via `mxc://` media URLs and uploaded to the homeserver, then sent as native Matrix media messages (`m.image`, `m.video`, `m.audio`, `m.file`).
+- Only rooms the bot has already joined are monitored. Invite the bot to a room before sending messages.
+- For self-hosted homeservers, set `homeserver` to your server's base URL (e.g. `https://matrix.example.com`).
+
+---
+
+## XiaoYi
+
+The XiaoYi channel connects CoPaw via **A2A (Agent-to-Agent) protocol** over WebSocket to Huawei's AI assistant platform.
+
+### Get credentials
+
+1. Create an agent in the XiaoYi Open Platform.
+2. Obtain **AK** (Access Key), **SK** (Secret Key), and **Agent ID**.
+
+### Core Config
+
+**XiaoYi-specific fields:**
+
+| Field      | Type   | Default                                          | Description             |
+| ---------- | ------ | ------------------------------------------------ | ----------------------- |
+| `ak`       | string | `""` (required)                                  | Access Key              |
+| `sk`       | string | `""` (required)                                  | Secret Key              |
+| `agent_id` | string | `""` (required)                                  | Agent unique identifier |
+| `ws_url`   | string | `wss://hag.cloud.huawei.com/openclaw/v1/ws/link` | WebSocket URL           |
+
+### Supported File Types
+
+**Images**: JPEG, JPG, PNG, BMP, WEBP
+
+**Files**: PDF, DOC, DOCX, PPT, PPTX, XLS, XLSX, TXT
+
+> Note: Video and audio files are not supported by the XiaoYi platform.
+
+---
+
+## Voice
+
+The Voice channel enables phone call interactions with CoPaw via Twilio ConversationRelay, supporting Speech-to-Text (STT) and Text-to-Speech (TTS) for voice-based conversations.
+
+### Prerequisites
+
+1. **Twilio Account**: Register at [Twilio](https://www.twilio.com/) and obtain credentials
+2. **Cloudflare Tunnel** (or similar): Expose your local CoPaw service to the public internet for Twilio webhook callbacks
+
+### Create Twilio account and get credentials
+
+1. Visit the [Twilio Console](https://console.twilio.com/) and register an account
+2. From the Dashboard, obtain:
+   - **Account SID** (account identifier)
+   - **Auth Token** (authentication token)
+3. Purchase a phone number:
+   - Go to **Phone Numbers → Buy a Number**
+   - Select a number that supports voice calls
+   - Note the **Phone Number** (e.g., `+1234567890`) and **Phone Number SID**
+
+### Configure Cloudflare Tunnel
+
+Twilio needs to reach CoPaw's webhook endpoint via the public internet, so you need to expose your local service.
+
+1. Install Cloudflare Tunnel client:
+
+```bash
+# macOS
+brew install cloudflare/cloudflare/cloudflared
+
+# Linux
+wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+sudo chmod +x /usr/local/bin/cloudflared
+```
+
+2. Start the tunnel to expose local port 8088:
+
+```bash
+cloudflared tunnel --url http://localhost:8088
+```
+
+3. The terminal will output a public URL, e.g., `https://abc-def-ghi.trycloudflare.com`
+
+### Configure Voice channel
+
+**Method 1:** Configure in the Console
+
+Go to **Control → Channels**, click **Voice**, enable it, and fill in:
+
+- **Twilio Account SID**: From Twilio Dashboard
+- **Twilio Auth Token**: From Twilio Dashboard
+- **Phone Number**: Your purchased phone number (e.g., `+1234567890`)
+- **Phone Number SID**: The phone number's SID
+
+Advanced options:
+
+- **TTS Provider**: Text-to-speech provider (default `google`)
+- **TTS Voice**: Voice model (default `en-US-Journey-D`)
+- **STT Provider**: Speech-to-text provider (default `deepgram`)
+- **Language**: Language code (default `en-US`)
+- **Welcome Greeting**: Initial greeting when the call connects
+
+**Method 2:** Edit `agent.json` manually
+
+```json
+{
+  "channels": {
+    "voice": {
+      "enabled": true,
+      "twilio_account_sid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "twilio_auth_token": "your_auth_token",
+      "phone_number": "+1234567890",
+      "phone_number_sid": "PNxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "tts_provider": "google",
+      "tts_voice": "en-US-Journey-D",
+      "stt_provider": "deepgram",
+      "language": "en-US",
+      "welcome_greeting": "Hi! This is CoPaw. How can I help you?"
+    }
+  }
+}
+```
+
+### Configure Twilio Webhook
+
+Configure your phone number's webhook in the Twilio Console:
+
+1. Go to **Phone Numbers → Manage → Active Numbers**
+2. Click your phone number
+3. In the **Voice Configuration** section:
+   - **A Call Comes In**: Select **Webhook**
+   - **URL**: Enter `https://your-cloudflare-url.trycloudflare.com/api/voice/callback`
+   - **HTTP Method**: Select **POST**
+4. Save the configuration
+
+### Usage
+
+After configuration, simply call your Twilio phone number to have a voice conversation with CoPaw:
+
+1. Dial the phone number
+2. After hearing the welcome greeting, start speaking
+3. CoPaw converts speech to text and processes it through the Agent
+4. The Agent's response is converted to speech and played back to you
+
+**Voice channel-specific fields:**
+
+| Field                | Type   | Default                                    | Description                                  |
+| -------------------- | ------ | ------------------------------------------ | -------------------------------------------- |
+| `twilio_account_sid` | string | `""` (required)                            | Twilio Account SID                           |
+| `twilio_auth_token`  | string | `""` (required)                            | Twilio Auth Token                            |
+| `phone_number`       | string | `""` (required)                            | Purchased phone number (e.g., `+1234567890`) |
+| `phone_number_sid`   | string | `""` (required)                            | Phone number SID                             |
+| `tts_provider`       | string | `"google"`                                 | Text-to-speech provider                      |
+| `tts_voice`          | string | `"en-US-Journey-D"`                        | TTS voice model                              |
+| `stt_provider`       | string | `"deepgram"`                               | Speech-to-text provider                      |
+| `language`           | string | `"en-US"`                                  | Language code                                |
+| `welcome_greeting`   | string | `"Hi! This is CoPaw. How can I help you?"` | Welcome message when call connects           |
+
+> **Note**: The Voice channel requires a continuous network connection and a running tunnel solution. For production use, consider stable tunneling options (like Cloudflare Tunnel, ngrok paid plans, etc.).
+
+---
+
 ## Appendix
 
 ### Config overview
 
-| Channel  | Config key | Main fields                                                             |
-| -------- | ---------- | ----------------------------------------------------------------------- |
-| DingTalk | dingtalk   | client_id, client_secret                                                |
-| Feishu   | feishu     | app_id, app_secret; optional encrypt_key, verification_token, media_dir |
-| iMessage | imessage   | db_path, poll_sec (macOS only)                                          |
-| Discord  | discord    | bot_token; optional http_proxy, http_proxy_auth                         |
-| QQ       | qq         | app_id, client_secret                                                   |
-| Telegram | telegram   | bot_token; optional http_proxy, http_proxy_auth                         |
+| Channel    | Config key | Main fields                                                                                                |
+| ---------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
+| DingTalk   | dingtalk   | client_id, client_secret, message_type, card_template_id, card_template_key, robot_code                    |
+| Feishu     | feishu     | app_id, app_secret, domain; optional encrypt_key, verification_token, media_dir                            |
+| iMessage   | imessage   | db_path, poll_sec (macOS only)                                                                             |
+| Discord    | discord    | bot_token; optional http_proxy, http_proxy_auth                                                            |
+| QQ         | qq         | app_id, client_secret, markdown_enabled, max_reconnect_attempts                                            |
+| Telegram   | telegram   | bot_token; optional http_proxy, http_proxy_auth                                                            |
+| Mattermost | mattermost | url, bot_token; optional show_typing, thread_follow_without_mention                                        |
+| Matrix     | matrix     | homeserver, user_id, access_token                                                                          |
+| WeCom      | wecom      | bot_id, secret; optional media_dir, max_reconnect_attempts                                                 |
+| WeChat     | weixin     | bot_token (or QR login); optional bot_token_file, base_url, media_dir                                      |
+| XiaoYi     | xiaoyi     | ak, sk, agent_id; optional ws_url                                                                          |
+| Voice      | voice      | twilio_account_sid, twilio_auth_token, phone_number, phone_number_sid; optional tts_provider, stt_provider |
+
+All channels also support the common access control fields (`dm_policy`, `group_policy`, `allow_from`, `deny_message`, `require_mention`) documented in the common fields section below.
 
 Field details and structure are in the tables above and [Config & working dir](./config).
+
+### Common fields
+
+All channels support the following common fields:
+
+| Field                  | Type     | Default  | Description                                                               |
+| ---------------------- | -------- | -------- | ------------------------------------------------------------------------- |
+| `enabled`              | bool     | `false`  | Whether to enable this channel                                            |
+| `bot_prefix`           | string   | `""`     | Bot reply prefix (e.g., `[BOT]`)                                          |
+| `filter_tool_messages` | bool     | `false`  | Whether to filter tool call/output messages                               |
+| `filter_thinking`      | bool     | `false`  | Whether to filter thinking/reasoning content                              |
+| `dm_policy`            | string   | `"open"` | Direct message access policy: `"open"` (open) / `"allowlist"` (whitelist) |
+| `group_policy`         | string   | `"open"` | Group chat access policy: `"open"` (open) / `"allowlist"` (whitelist)     |
+| `allow_from`           | string[] | `[]`     | Whitelist (effective when policy is `"allowlist"`)                        |
+| `deny_message`         | string   | `""`     | Denial message when access is denied                                      |
+| `require_mention`      | bool     | `false`  | Whether @mention is required to respond                                   |
 
 ### Multi-modal message support
 
@@ -487,14 +1021,20 @@ video, audio, and file varies by channel.
 **✓** = supported. **🚧** = under construction (implementable but not yet
 done). **✗** = not supported (not possible on this channel).
 
-| Channel  | Recv text | Recv image | Recv video | Recv audio | Recv file | Send text | Send image | Send video | Send audio | Send file |
-| -------- | --------- | ---------- | ---------- | ---------- | --------- | --------- | ---------- | ---------- | ---------- | --------- |
-| DingTalk | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
-| Feishu   | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
-| Discord  | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
-| iMessage | ✓         | ✗          | ✗          | ✗          | ✗         | ✓         | ✗          | ✗          | ✗          | ✗         |
-| QQ       | ✓         | 🚧         | 🚧         | 🚧         | 🚧        | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
-| Telegram | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| Channel    | Recv text | Recv image | Recv video | Recv audio | Recv file | Send text | Send image | Send video | Send audio | Send file |
+| ---------- | --------- | ---------- | ---------- | ---------- | --------- | --------- | ---------- | ---------- | ---------- | --------- |
+| DingTalk   | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| Feishu     | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| Discord    | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
+| iMessage   | ✓         | ✗          | ✗          | ✗          | ✗         | ✓         | ✗          | ✗          | ✗          | ✗         |
+| QQ         | ✓         | 🚧         | 🚧         | 🚧         | 🚧        | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
+| WeCom      | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| WeChat     | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
+| Telegram   | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| Mattermost | ✓         | ✓          | 🚧         | 🚧         | ✓         | ✓         | ✓          | 🚧         | 🚧         | ✓         |
+| Matrix     | ✓         | ✓          | ✓          | ✓          | ✓         | ✓         | ✓          | ✓          | ✓          | ✓         |
+| XiaoYi     | ✓         | ✓          | ✗          | ✗          | ✓         | ✓         | 🚧         | 🚧         | 🚧         | 🚧        |
+| Voice      | ✗         | ✗          | ✗          | ✓          | ✗         | ✗         | ✗          | ✗          | ✓          | ✗         |
 
 Notes:
 
@@ -510,11 +1050,16 @@ Notes:
 - **QQ**: Receiving attachments as multimodal and sending real media are 🚧;
   currently text + link-only.
 - **Telegram**: Attachments are parsed as files on receive and can be opened in the corresponding format (image / voice / video / file) within the Telegram chat interface.
+- **WeCom**: WebSocket long connection for receiving; markdown/template_card for sending. Supports receiving and sending text, image, voice, video, and file.
+- **WeChat Personal (iLink)**: HTTP long-polling for receiving. Supports text, images (AES-128-ECB decrypted), voice (ASR transcription), files, and videos. Sending currently supports text only (iLink API limitation).
+- **Matrix**: Receives image, video, audio, and file attachments via `mxc://` media URLs. Sends media by uploading to the homeserver and sending native Matrix media messages (`m.image`, `m.video`, `m.audio`, `m.file`).
+- **XiaoYi**: Supports receiving text, images (JPEG/PNG/BMP/WEBP), and files (PDF/DOC/DOCX/PPT/PPTX/XLS/XLSX/TXT); video and audio are not supported by the platform.
+- **Voice**: Phone call interaction via Twilio ConversationRelay. Receives audio (speech) and sends audio (TTS). All communication is voice-based; text/image/video/file are not supported over phone calls.
 
 ### Changing config via HTTP
 
 With the app running you can read and update channel config; changes are written to
-`config.json` and applied automatically:
+`agent.json` and applied automatically:
 
 - `GET /config/channels` — List all channels
 - `PUT /config/channels` — Replace all
@@ -661,6 +1206,91 @@ def build_agent_request_from_native(self, native_payload):
 - **Remove**: `copaw channels remove <key>` deletes that channel’s module from `custom_channels/` (custom channels only; built-ins cannot be removed). By default it also removes the key from `channels` in `config.json`; use `--keep-config` to leave config unchanged.
 - **Config**: `ChannelConfig` uses `extra="allow"`, so any channel key can appear under `channels` in `config.json`. Use `copaw channels config` for interactive setup or edit config by hand.
 
+### HTTP route registration
+
+For channels that require webhook callbacks (e.g., WeChat, Slack, LINE), you can register custom HTTP routes by exporting a `register_app_routes` callable in your module — no changes to CoPaw's core source required.
+
+At startup, CoPaw scans modules in `custom_channels/` for a `register_app_routes` export. If found, it is called with the FastAPI `app` instance, allowing the channel to register any routes it needs.
+
+**Route prefix behavior**:
+
+| Prefix      | Behavior                                   |
+| ----------- | ------------------------------------------ |
+| `/api/`     | Silent registration                        |
+| Other paths | Prints a warning at startup (non-blocking) |
+
+**Interface — `register_app_routes(app)`**
+
+- **Parameter**: `app` — FastAPI application instance
+- **Returns**: None
+- **Scope**: Register routes, middleware, or startup/shutdown events
+- **Error isolation**: A single channel's registration failure does not affect other channels
+
+**Minimal example — Echo channel**:
+
+```
+<workspace>/
+└── custom_channels/
+    └── my_echo/
+        └── __init__.py
+```
+
+```python
+# custom_channels/my_echo/__init__.py
+from copaw.app.channels.base import BaseChannel
+
+class MyEchoChannel(BaseChannel):
+    """A minimal channel that echoes messages back."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    async def _listen(self):
+        pass  # Receive messages via HTTP callback
+
+    async def _send(self, target, content, **kwargs):
+        self.logger.info(f"Would send to {target}: {content}")
+
+
+def register_app_routes(app):
+    """Register HTTP routes for this channel."""
+
+    @app.post("/api/my-echo/callback")
+    async def echo_callback(request):
+        """Webhook entry point."""
+        body = await request.json()
+
+        from copaw.app.channels.base import TextContent
+        channel = MyEchoChannel()
+        channel.enqueue_user_message(
+            user_id=body.get("user_id", "anonymous"),
+            session_id=body.get("session_id", "default"),
+            content=[TextContent(type="text", text=body.get("text", ""))],
+        )
+
+        return {"status": "ok"}
+```
+
+```json
+{
+  "channels": {
+    "my_echo": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Test after startup:
+
+```bash
+curl -X POST http://localhost:8088/api/my-echo/callback \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "test", "session_id": "test", "text": "Hello!"}'
+```
+
+**Real-world example**: WeChat ClawBot integration ([PR #2140](https://github.com/agentscope-ai/CoPaw/pull/2140), [Issue #2043](https://github.com/agentscope-ai/CoPaw/issues/2043)) uses this mechanism to register the `/api/wechat/callback` route with Tencent's official SDK for message delivery.
+
 ---
 
 ## Related pages
@@ -669,4 +1299,4 @@ def build_agent_request_from_native(self, native_payload):
 - [Quick start](./quickstart) — Install and first run
 - [Heartbeat](./heartbeat) — Scheduled check-in / digest
 - [CLI](./cli) — init, app, cron, clean
-- [Config & working dir](./config) — config.json and working directory
+- [Config & working dir](./config) — Configuration files and working directory

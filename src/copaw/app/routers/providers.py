@@ -3,35 +3,56 @@
 
 from __future__ import annotations
 
+import logging
 from typing import List, Literal, Optional
+from copy import deepcopy
 
-from fastapi import APIRouter, Body, HTTPException, Path
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+)
 from pydantic import BaseModel, Field
 
-from ...providers import (
-    ActiveModelsInfo,
-    ModelInfo,
-    ProviderDefinition,
-    ProviderInfo,
-    ProvidersData,
-    add_model,
-    create_custom_provider,
-    delete_custom_provider,
-    discover_provider_models,
-    get_provider,
-    list_providers,
-    load_providers_json,
-    mask_api_key,
-    remove_model,
-    set_active_llm,
-    test_model_connection,
-    test_provider_connection,
-    update_provider_settings,
-)
+from ..agent_context import get_agent_for_request
+from ..utils import schedule_agent_reload
+from ...config.config import load_agent_config, save_agent_config
+from ...providers.provider import ProviderInfo, ModelInfo
+from ...providers.provider_manager import ActiveModelsInfo, ProviderManager
+from ...providers.models import ModelSlotConfig
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/models", tags=["models"])
 
-ChatModelName = Literal["OpenAIChatModel", "AnthropicChatModel"]
+ChatModelName = Literal[
+    "OpenAIChatModel",
+    "AnthropicChatModel",
+    "GeminiChatModel",
+]
+
+# effective: agent-specific if set, otherwise global
+# global: the global model only, ignoring any agent-specific setting
+# agent: a specific agent's model only, error if not set
+ActiveModelReadScope = Literal["effective", "global", "agent"]
+ActiveModelWriteScope = Literal["global", "agent"]
+
+
+def get_provider_manager(request: Request) -> ProviderManager:
+    """Get the provider manager from app state.
+
+    Args:
+        request: FastAPI request object
+    """
+    provider_manager = getattr(request.app.state, "provider_manager", None)
+    if provider_manager is None:
+        provider_manager = ProviderManager.get_instance()
+    return provider_manager
 
 
 class ProviderConfigRequest(BaseModel):
@@ -41,11 +62,27 @@ class ProviderConfigRequest(BaseModel):
         default=None,
         description="Chat model class name for protocol selection",
     )
+    generate_kwargs: Optional[dict] = Field(
+        default_factory=dict,
+        description=(
+            "Configuration in json format, will be expanded "
+            "and passed to generation calls "
+            "(e.g., openai.chat.completions, anthropic.messages)."
+        ),
+    )
 
 
 class ModelSlotRequest(BaseModel):
     provider_id: str = Field(..., description="Provider to use")
     model: str = Field(..., description="Model identifier")
+    scope: ActiveModelWriteScope = Field(
+        ...,
+        description="Whether to update the global model or a specific agent",
+    )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Target agent ID when scope is 'agent'",
+    )
 
 
 class CreateCustomProviderRequest(BaseModel):
@@ -62,46 +99,36 @@ class AddModelRequest(BaseModel):
     name: str = Field(...)
 
 
-def _build_provider_info(
-    provider: ProviderDefinition,
-    data: ProvidersData,
-) -> ProviderInfo:
-    if provider.is_local:
-        return ProviderInfo(
-            id=provider.id,
-            name=provider.name,
-            api_key_prefix="",
-            models=list(provider.models),
-            extra_models=[],
-            is_custom=False,
-            is_local=True,
-            current_api_key="",
-            current_base_url="",
-            chat_model="OpenAIChatModel",
+def _validate_model_slot(
+    manager: ProviderManager,
+    provider_id: str,
+    model_id: str,
+) -> None:
+    """Validate that the provider and model exist without mutating state."""
+    provider = manager.get_provider(provider_id)
+    if provider is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider '{provider_id}' not found.",
+        )
+    if not provider.has_model(model_id):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{model_id}' not found in provider "
+                f"'{provider_id}'."
+            ),
         )
 
-    cur_base_url, cur_api_key = data.get_credentials(provider.id)
 
-    settings = data.providers.get(provider.id)
-    extra = (
-        list(settings.extra_models)
-        if settings and not provider.is_custom
-        else []
-    )
-
-    return ProviderInfo(
-        id=provider.id,
-        name=provider.name,
-        api_key_prefix=provider.api_key_prefix,
-        models=list(provider.models) + extra,
-        extra_models=extra,
-        is_custom=provider.is_custom,
-        is_local=provider.is_local,
-        needs_base_url=provider.is_custom or not provider.default_base_url,
-        current_api_key=mask_api_key(cur_api_key),
-        current_base_url=cur_base_url,
-        chat_model=provider.chat_model,
-    )
+async def _load_agent_model(
+    request: Request,
+    agent_id: str,
+) -> ModelSlotConfig | None:
+    """Load the model configured for a specific agent."""
+    workspace = await get_agent_for_request(request, agent_id=agent_id)
+    agent_config = load_agent_config(workspace.agent_id)
+    return agent_config.active_model
 
 
 @router.get(
@@ -109,9 +136,10 @@ def _build_provider_info(
     response_model=List[ProviderInfo],
     summary="List all providers",
 )
-async def list_all_providers() -> List[ProviderInfo]:
-    data = load_providers_json()
-    return [_build_provider_info(p, data) for p in list_providers()]
+async def list_all_providers(
+    manager: ProviderManager = Depends(get_provider_manager),
+) -> List[ProviderInfo]:
+    return await manager.list_provider_info()
 
 
 @router.put(
@@ -120,33 +148,32 @@ async def list_all_providers() -> List[ProviderInfo]:
     summary="Configure a provider",
 )
 async def configure_provider(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: ProviderConfigRequest = Body(...),
 ) -> ProviderInfo:
-    provider = get_provider(provider_id)
-    if provider is None:
-        raise HTTPException(404, detail=f"Provider '{provider_id}' not found")
-
-    # Allow base_url for custom providers, providers without a default
-    # base URL (e.g. Azure OpenAI), and Ollama (user may override).
-    allow_base_url = (
-        provider.is_custom
-        or not provider.default_base_url
-        or provider.id == "ollama"
+    ok = manager.update_provider(
+        provider_id,
+        {
+            "api_key": body.api_key,
+            "base_url": body.base_url,
+            "chat_model": body.chat_model,
+            "generate_kwargs": body.generate_kwargs,
+        },
     )
-    base_url = body.base_url if allow_base_url else None
-    try:
-        data = update_provider_settings(
-            provider_id,
-            api_key=body.api_key,
-            base_url=base_url,
-            chat_model=body.chat_model if provider.is_custom else None,
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider '{provider_id}' not found",
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    updated_provider = get_provider(provider_id)
-    assert updated_provider is not None
-    return _build_provider_info(updated_provider, data)
+
+    provider_info = await manager.get_provider_info(provider_id)
+    if provider_info is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Provider '{provider_id}' not found after update",
+        )
+    return provider_info
 
 
 @router.post(
@@ -156,23 +183,24 @@ async def configure_provider(
     status_code=201,
 )
 async def create_custom_provider_endpoint(
+    manager: ProviderManager = Depends(get_provider_manager),
     body: CreateCustomProviderRequest = Body(...),
 ) -> ProviderInfo:
     try:
-        data = create_custom_provider(
-            provider_id=body.id,
-            name=body.name,
-            default_base_url=body.default_base_url,
-            api_key_prefix=body.api_key_prefix,
-            chat_model=body.chat_model,
-            models=body.models,
+        provider_info = await manager.add_custom_provider(
+            ProviderInfo(
+                id=body.id,
+                name=body.name,
+                base_url=body.default_base_url,
+                api_key_prefix=body.api_key_prefix,
+                chat_model=body.chat_model,
+                extra_models=body.models,
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    provider = get_provider(body.id)
-    assert provider is not None
-    return _build_provider_info(provider, data)
+    return provider_info
 
 
 class TestConnectionResponse(BaseModel):
@@ -216,10 +244,13 @@ class DiscoverModelsRequest(BaseModel):
 
 class DiscoverModelsResponse(BaseModel):
     success: bool = Field(..., description="Whether discovery succeeded")
-    message: str = Field(..., description="Human-readable result message")
     models: List[ModelInfo] = Field(
         default_factory=list,
         description="Discovered models",
+    )
+    message: str = Field(
+        default="",
+        description="Human-readable result message",
     )
     added_count: int = Field(
         default=0,
@@ -233,20 +264,28 @@ class DiscoverModelsResponse(BaseModel):
     summary="Test provider connection",
 )
 async def test_provider(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: Optional[TestProviderRequest] = Body(default=None),
 ) -> TestConnectionResponse:
     """Test if a provider's URL and API key are valid."""
     try:
-        api_key = body.api_key if body else None
-        base_url = body.base_url if body else None
-        result = await test_provider_connection(
-            provider_id,
-            api_key=api_key,
-            base_url=base_url,
-            chat_model=body.chat_model if body else None,
+        provider = manager.get_provider(provider_id)
+        if provider is None:
+            raise ValueError(f"Provider '{provider_id}' not found")
+        # Ensure we don't accidentally modify provider config during test
+        tmp_provider = deepcopy(provider)
+        if body and body.api_key:
+            tmp_provider.api_key = body.api_key
+        if body and body.base_url:
+            tmp_provider.base_url = body.base_url
+        ok, msg = await tmp_provider.check_connection()
+        return TestConnectionResponse(
+            success=ok,
+            message=(
+                "Connection successful" if ok else f"Connection failed: {msg}"
+            ),
         )
-        return TestConnectionResponse(**result)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -257,17 +296,32 @@ async def test_provider(
     summary="Discover available models from provider",
 )
 async def discover_models(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: Optional[DiscoverModelsRequest] = Body(default=None),
 ) -> DiscoverModelsResponse:
     try:
-        result = await discover_provider_models(
+        ok = manager.update_provider(
             provider_id,
-            api_key=body.api_key if body else None,
-            base_url=body.base_url if body else None,
-            chat_model=body.chat_model if body else None,
+            {
+                "api_key": body.api_key if body else None,
+                "base_url": body.base_url if body else None,
+            },
         )
-        return DiscoverModelsResponse(**result)
+        if not ok:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Provider '{provider_id}' not found",
+            )
+        try:
+            result = await manager.fetch_provider_models(
+                provider_id,
+            )
+            success = True
+        except Exception:
+            result = []
+            success = False
+        return DiscoverModelsResponse(success=success, models=result)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -278,13 +332,24 @@ async def discover_models(
     summary="Test a specific model",
 )
 async def test_model(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: TestModelRequest = Body(...),
 ) -> TestConnectionResponse:
     """Test if a specific model works with the configured provider."""
     try:
-        result = await test_model_connection(provider_id, body.model_id)
-        return TestConnectionResponse(**result)
+        provider = manager.get_provider(provider_id)
+        if provider is None:
+            raise ValueError(f"Provider '{provider_id}' not found")
+        ok, msg = await provider.check_model_connection(model_id=body.model_id)
+        return TestConnectionResponse(
+            success=ok,
+            message=(
+                "Model connection successful"
+                if ok
+                else f"Model connection failed: {msg}"
+            ),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -295,13 +360,16 @@ async def test_model(
     summary="Delete a custom provider",
 )
 async def delete_custom_provider_endpoint(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
 ) -> List[ProviderInfo]:
     try:
-        data = delete_custom_provider(provider_id)
+        ok = manager.remove_custom_provider(provider_id)
+        if not ok:
+            raise ValueError(f"Custom Provider '{provider_id}' not found")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return [_build_provider_info(p, data) for p in list_providers()]
+    return await manager.list_provider_info()
 
 
 @router.post(
@@ -311,16 +379,58 @@ async def delete_custom_provider_endpoint(
     status_code=201,
 )
 async def add_model_endpoint(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     body: AddModelRequest = Body(...),
 ) -> ProviderInfo:
     try:
-        data = add_model(provider_id, ModelInfo(id=body.id, name=body.name))
+        provider = await manager.add_model_to_provider(
+            provider_id=provider_id,
+            model_info=ModelInfo(id=body.id, name=body.name),
+        )  # Validate provider exists and add model
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    provider = get_provider(provider_id)
-    assert provider is not None
-    return _build_provider_info(provider, data)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return provider
+
+
+class ProbeMultimodalResponse(BaseModel):
+    supports_image: bool = Field(
+        default=False,
+        description="Whether the model supports image input",
+    )
+    supports_video: bool = Field(
+        default=False,
+        description="Whether the model supports video input",
+    )
+    supports_multimodal: bool = Field(
+        default=False,
+        description="Whether the model supports any multimodal input",
+    )
+    image_message: str = Field(
+        default="",
+        description="Probe result message for image support",
+    )
+    video_message: str = Field(
+        default="",
+        description="Probe result message for video support",
+    )
+
+
+@router.post(
+    "/{provider_id}/models/{model_id:path}/probe-multimodal",
+    response_model=ProbeMultimodalResponse,
+    summary="Probe model multimodal capability",
+)
+async def probe_model_multimodal(
+    manager: ProviderManager = Depends(get_provider_manager),
+    provider_id: str = Path(...),
+    model_id: str = Path(...),
+) -> ProbeMultimodalResponse:
+    """Probe image and video support by sending lightweight test requests."""
+    result = await manager.probe_model_multimodal(provider_id, model_id)
+    if "error" in result:
+        raise HTTPException(status_code=404, detail=result["error"])
+    return ProbeMultimodalResponse(**result)
 
 
 @router.delete(
@@ -329,26 +439,74 @@ async def add_model_endpoint(
     summary="Remove a model from a provider",
 )
 async def remove_model_endpoint(
+    manager: ProviderManager = Depends(get_provider_manager),
     provider_id: str = Path(...),
     model_id: str = Path(...),
 ) -> ProviderInfo:
     try:
-        data = remove_model(provider_id, model_id)
+        provider = await manager.delete_model_from_provider(
+            provider_id=provider_id,
+            model_id=model_id,
+        )  # Validate provider and model exist and delete
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    provider = get_provider(provider_id)
-    assert provider is not None
-    return _build_provider_info(provider, data)
+    return provider
 
 
 @router.get(
     "/active",
     response_model=ActiveModelsInfo,
-    summary="Get active LLM",
+    summary="Get effective active LLM",
 )
-async def get_active_models() -> ActiveModelsInfo:
-    data = load_providers_json()
-    return ActiveModelsInfo(active_llm=data.active_llm)
+async def get_active_models(
+    request: Request,
+    manager: ProviderManager = Depends(get_provider_manager),
+    scope: ActiveModelReadScope = Query(default="effective"),
+    agent_id: Optional[str] = Query(default=None),
+) -> ActiveModelsInfo:
+    """Get active model by scope.
+
+    - effective: agent-specific first, otherwise global fallback
+    - global: ProviderManager global model only
+    - agent: a specific agent's configured model only
+    """
+    if scope == "global":
+        return ActiveModelsInfo(active_llm=manager.get_active_model())
+
+    if scope == "agent":
+        if not agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="agent_id is required when scope is 'agent'",
+            )
+        return ActiveModelsInfo(
+            active_llm=await _load_agent_model(request, agent_id),
+        )
+
+    try:
+        target_agent_id = agent_id
+        if target_agent_id is None:
+            workspace = await get_agent_for_request(request)
+            target_agent_id = workspace.agent_id
+
+        agent_model = await _load_agent_model(request, target_agent_id)
+        if agent_model:
+            logger.info(
+                "Returning agent-specific model for %s: %s",
+                target_agent_id,
+                agent_model,
+            )
+            return ActiveModelsInfo(active_llm=agent_model)
+    except (HTTPException, OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Failed to get agent-specific model: %s",
+            exc,
+            exc_info=True,
+        )
+
+    global_model = manager.get_active_model()
+    logger.info("Returning global model: %s", global_model)
+    return ActiveModelsInfo(active_llm=global_model)
 
 
 @router.put(
@@ -357,47 +515,60 @@ async def get_active_models() -> ActiveModelsInfo:
     summary="Set active LLM",
 )
 async def set_active_model(
+    request: Request,
+    manager: ProviderManager = Depends(get_provider_manager),
     body: ModelSlotRequest = Body(...),
 ) -> ActiveModelsInfo:
-    provider = get_provider(body.provider_id)
-    if provider is None:
+    """Set active model by scope."""
+    if body.scope == "global":
+        try:
+            await manager.activate_model(body.provider_id, body.model)
+        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            message = str(exc)
+            lower_msg = message.lower()
+            if "provider" in lower_msg and "not found" in lower_msg:
+                raise HTTPException(status_code=404, detail=message) from exc
+            raise HTTPException(status_code=400, detail=message) from exc
+        return ActiveModelsInfo(active_llm=manager.get_active_model())
+
+    if not body.agent_id:
         raise HTTPException(
-            404,
-            detail=f"Provider '{body.provider_id}' not found",
+            status_code=400,
+            detail="agent_id is required when scope is 'agent'",
         )
 
-    data = load_providers_json()
-    base_url, api_key = data.get_credentials(provider.id)
+    _validate_model_slot(manager, body.provider_id, body.model)
 
-    # Validation based on provider type
-    if provider.is_custom:
-        # Custom providers need base_url
-        if not base_url:
-            msg = (
-                f"Provider '{provider.name}' has no base_url configured. "
-                "Please configure the base URL first."
-            )
-            raise HTTPException(status_code=400, detail=msg)
-    elif provider.id == "ollama":
-        # Ollama needs base_url to connect to daemon
-        if not base_url:
-            msg = (
-                f"Provider '{provider.name}' has no base_url configured. "
-                "Please configure the base URL first."
-            )
-            raise HTTPException(status_code=400, detail=msg)
-    elif not provider.is_local:
-        # Built-in remote providers (modelscope, dashscope, etc.) need API key
-        if not api_key:
-            msg = (
-                f"Provider '{provider.name}' has no API key configured. "
-                "Please configure the API key first."
-            )
-            raise HTTPException(status_code=400, detail=msg)
-    # Local providers (llama.cpp, mlx) don't need validation
+    try:
+        workspace = await get_agent_for_request(
+            request,
+            agent_id=body.agent_id,
+        )
+        agent_config = load_agent_config(workspace.agent_id)
+        agent_config.active_model = ModelSlotConfig(
+            provider_id=body.provider_id,
+            model=body.model,
+        )
+        save_agent_config(workspace.agent_id, agent_config)
+        # Hot reload agent (async, non-blocking)
+        schedule_agent_reload(request, workspace.agent_id)
 
-    if not body.model:
-        raise HTTPException(status_code=400, detail="Model is required.")
+    except (HTTPException, OSError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Failed to save active model to agent config: %s",
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save active model to agent config",
+        ) from exc
 
-    data = set_active_llm(body.provider_id, body.model)
-    return ActiveModelsInfo(active_llm=data.active_llm)
+    manager.maybe_probe_multimodal(body.provider_id, body.model)
+
+    return ActiveModelsInfo(
+        active_llm=ModelSlotConfig(
+            provider_id=body.provider_id,
+            model=body.model,
+        ),
+    )

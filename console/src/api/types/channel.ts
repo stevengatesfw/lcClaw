@@ -2,6 +2,11 @@ export interface BaseChannelConfig {
   enabled: boolean;
   bot_prefix: string;
   filter_tool_messages?: boolean;
+  filter_thinking?: boolean;
+  dm_policy?: "open" | "allowlist";
+  group_policy?: "open" | "allowlist";
+  allow_from?: string[];
+  require_mention?: boolean;
 }
 
 export interface IMessageChannelConfig extends BaseChannelConfig {
@@ -13,11 +18,16 @@ export interface DiscordConfig extends BaseChannelConfig {
   bot_token: string;
   http_proxy: string;
   http_proxy_auth: string;
+  accept_bot_messages?: boolean;
 }
 
 export interface DingTalkConfig extends BaseChannelConfig {
   client_id: string;
   client_secret: string;
+  message_type: string;
+  card_template_id: string;
+  card_template_key: string;
+  robot_code: string;
 }
 
 export interface FeishuConfig extends BaseChannelConfig {
@@ -26,6 +36,7 @@ export interface FeishuConfig extends BaseChannelConfig {
   encrypt_key: string;
   verification_token: string;
   media_dir: string;
+  domain?: "feishu" | "lark";
 }
 
 export interface QQConfig extends BaseChannelConfig {
@@ -38,6 +49,44 @@ export interface TelegramConfig extends BaseChannelConfig {
   http_proxy: string;
   http_proxy_auth: string;
   show_typing?: boolean;
+}
+
+export interface MQTTConfig extends BaseChannelConfig {
+  host: string;
+  port: number;
+  transport: string;
+  clean_session: boolean;
+  qos: number;
+  username: string;
+  password: string;
+  subscribe_topic: string;
+  publish_topic: string;
+  tls_enabled?: boolean;
+  tls_ca_certs?: string;
+  tls_certfile?: string;
+  tls_keyfile?: string;
+}
+
+export interface MatrixConfig extends BaseChannelConfig {
+  homeserver: string;
+  user_id: string;
+  access_token: string;
+}
+
+export interface MattermostConfig extends BaseChannelConfig {
+  url: string;
+  bot_token: string;
+  media_dir?: string;
+  show_typing?: boolean;
+  thread_follow_without_mention?: boolean;
+}
+
+export interface WecomConfig extends BaseChannelConfig {
+  bot_id: string;
+  secret: string;
+  media_dir?: string;
+  welcome_text?: string;
+  max_reconnect_attempts?: number;
 }
 
 export type ConsoleConfig = BaseChannelConfig;
@@ -54,6 +103,14 @@ export interface VoiceChannelConfig extends BaseChannelConfig {
   welcome_greeting: string;
 }
 
+export interface XiaoYiConfig extends BaseChannelConfig {
+  ak: string;
+  sk: string;
+  agent_id: string;
+  ws_url: string;
+  task_timeout_ms?: number;
+}
+
 export interface ChannelConfig {
   imessage: IMessageChannelConfig;
   discord: DiscordConfig;
@@ -61,8 +118,13 @@ export interface ChannelConfig {
   feishu: FeishuConfig;
   qq: QQConfig;
   telegram: TelegramConfig;
+  mqtt: MQTTConfig;
+  matrix: MatrixConfig;
+  mattermost: MattermostConfig;
+  wecom: WecomConfig;
   console: ConsoleConfig;
   voice: VoiceChannelConfig;
+  xiaoyi: XiaoYiConfig;
 }
 
 export type SingleChannelConfig =
@@ -73,4 +135,9 @@ export type SingleChannelConfig =
   | QQConfig
   | ConsoleConfig
   | TelegramConfig
-  | VoiceChannelConfig;
+  | MQTTConfig
+  | MatrixConfig
+  | MattermostConfig
+  | WecomConfig
+  | VoiceChannelConfig
+  | XiaoYiConfig;

@@ -6,21 +6,38 @@ directory) to tools and other components that don't receive it directly.
 """
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from .config.utils import get_user_working_dir
+from .config.utils import (
+    copaw_storage_isolation_enabled,
+    get_config_path,
+    get_config_path_for_user,
+    get_user_working_dir,
+)
 
 # Current request's user_id (from JWT when LAZY_PLATFORM_KEY is set).
-# Set by auth middleware, used by runner when AgentRequest.user_id is empty.
+# Set by auth middleware; used when AgentRequest.user_id is empty.
 _current_user_id: ContextVar[Optional[str]] = ContextVar(
     "current_user_id",
     default=None,
 )
 
 # Current request's working directory (per-user).
-# Set by runner at start of query_handler, read by file tools and prompt builder.
+# Set by runner in query_handler; read by file tools and prompt builder.
 _current_working_dir: ContextVar[Optional[Path]] = ContextVar(
     "current_working_dir",
+    default=None,
+)
+
+# POST /api/agent/process JSON ``meta`` (set by auth middleware for runner).
+_process_request_meta: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "process_request_meta",
+    default=None,
+)
+
+# Authorization header from upstream agent/process POST (LCAgent callbacks).
+_request_authorization: ContextVar[Optional[str]] = ContextVar(
+    "request_authorization",
     default=None,
 )
 
@@ -46,8 +63,40 @@ def reset_current_user_id() -> None:
 
 
 def get_context_user_id() -> Optional[str]:
-    """Get the user_id for the current request (from context, set by auth middleware)."""
+    """user_id for this request (context; set by auth middleware)."""
     return _current_user_id.get()
+
+
+def set_process_request_meta(meta: Optional[Dict[str, Any]]) -> None:
+    """Store ``meta`` from agent/process JSON for the current request."""
+    _process_request_meta.set(meta)
+
+
+def get_process_request_meta() -> Dict[str, Any]:
+    """Return agent/process ``meta`` dict (empty if unset)."""
+    m = _process_request_meta.get()
+    return m if isinstance(m, dict) else {}
+
+
+def reset_process_request_meta() -> None:
+    """Clear process meta context."""
+    _process_request_meta.set(None)
+
+
+def set_request_authorization(value: Optional[str]) -> None:
+    """Store Authorization header for the current agent/process request."""
+    _request_authorization.set(value)
+
+
+def get_request_authorization() -> str:
+    """Return Authorization header value (empty if unset)."""
+    v = _request_authorization.get()
+    return v if isinstance(v, str) else ""
+
+
+def reset_request_authorization() -> None:
+    """Clear Authorization context."""
+    _request_authorization.set(None)
 
 
 def get_current_working_dir() -> Path:
@@ -59,3 +108,17 @@ def get_current_working_dir() -> Path:
     if val is not None:
         return val
     return get_user_working_dir(None)
+
+
+def get_effective_config_path() -> Path:
+    """Config.json path for code paths without a FastAPI Request.
+
+    Uses JWT context user_id when storage isolation is on; otherwise global
+    ``get_config_path()``. If isolation is on but context has no user_id yet,
+    falls back to global path (legacy / cron); prefer passing explicit paths.
+    """
+    if copaw_storage_isolation_enabled():
+        uid = get_context_user_id()
+        if uid:
+            return get_config_path_for_user(uid)
+    return get_config_path()

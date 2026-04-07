@@ -10,7 +10,7 @@ const TOKEN_WAIT_MS = 5000;
  */
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<"waiting" | "ready" | "timeout">(() =>
-    isInLCAgentIframe() ? "waiting" : "ready"
+    isInLCAgentIframe() ? "waiting" : "ready",
   );
 
   useEffect(() => {

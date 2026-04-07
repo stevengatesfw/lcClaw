@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=redefined-outer-name,unused-argument
-import asyncio
 import mimetypes
 import os
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,36 +12,39 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from agentscope_runtime.engine.app import AgentApp
 
-from .runner import AgentRunner
-from ..config import (  # pylint: disable=no-name-in-module
-    load_config,
-    update_last_dispatch,
-    ConfigWatcher,
-)
+from ..config import load_config  # pylint: disable=no-name-in-module
 from ..config.utils import (
     copaw_storage_isolation_enabled,
-    get_jobs_path,
-    get_chats_path_for_user,
     get_config_path,
 )
+from ..context import get_effective_config_path
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV, CORS_ORIGINS, WORKING_DIR
 from ..__version__ import __version__
 from ..utils.logging import setup_logger, add_copaw_file_handler
-from .channels import ChannelManager  # pylint: disable=no-name-in-module
-from .channels.utils import make_process_from_runner
-from .mcp import MCPClientManager, MCPConfigWatcher  # MCP hot-reload support
-from .runner.repo.json_repo import JsonChatRepository
-from .crons.repo.aggregating import AggregatingJobRepository
-from .crons.repo.json_repo import JsonJobRepository
-from .crons.manager import CronManager
-from .runner.manager import ChatManager
-from .routers import router as api_router
+from .auth import (
+    AgentProcessUserInjectMiddleware,
+    AuthMiddleware,
+    UserIdContextMiddleware,
+)
+from .routers import router as api_router, create_agent_scoped_router
+from .routers.agent_scoped import AgentContextMiddleware
 from .routers.voice import voice_router
 from ..envs import load_envs_into_environ
-from .auth import AgentProcessUserInjectMiddleware, UserIdContextMiddleware
+from ..providers.provider_manager import ProviderManager
+from ..local_models.manager import LocalModelManager
+from .multi_agent_manager import MultiAgentManager
+from .storage_deps import resolve_request_config_path
+from .migration import (
+    migrate_legacy_workspace_to_default_agent,
+    migrate_legacy_skills_to_skill_pool,
+    ensure_default_agent_exists,
+    ensure_qa_agent_exists,
+)
+from .channels.registry import register_custom_channel_routes
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
+
 
 # Ensure static assets are served with browser-compatible MIME types across
 # platforms (notably Windows may miss .js/.mjs mappings).
@@ -57,12 +59,111 @@ mimetypes.add_type("application/wasm", ".wasm")
 if not copaw_storage_isolation_enabled():
     load_envs_into_environ()
 
-runner = AgentRunner()
+
+# Dynamic runner that selects the correct workspace runner based on request
+class DynamicMultiAgentRunner:
+    """Runner wrapper that dynamically routes to the correct workspace runner.
+
+    This allows AgentApp to work with multiple agents by inspecting
+    the X-Agent-Id header on each request.
+    """
+
+    def __init__(self):
+        self.framework_type = "agentscope"
+        self._multi_agent_manager = None
+
+    def set_multi_agent_manager(self, manager):
+        """Set the MultiAgentManager instance after initialization."""
+        self._multi_agent_manager = manager
+
+    async def _get_workspace_runner(self, request):
+        """Get the correct workspace runner based on request."""
+        from .agent_context import get_current_agent_id
+
+        # Get agent_id from context (set by middleware or header)
+        agent_id = get_current_agent_id()
+
+        logger.debug(f"_get_workspace_runner: agent_id={agent_id}")
+
+        # Get the correct workspace runner
+        if not self._multi_agent_manager:
+            raise RuntimeError("MultiAgentManager not initialized")
+
+        try:
+            cfg_path = resolve_request_config_path(request)
+            workspace = await self._multi_agent_manager.get_agent(
+                agent_id,
+                config_path=cfg_path,
+            )
+            logger.debug(
+                "Got workspace: %s, runner: %s",
+                workspace.agent_id,
+                workspace.runner,
+            )
+            return workspace.runner
+        except ValueError as e:
+            logger.error(f"Agent not found: {e}")
+            raise
+        except Exception as e:
+            logger.error(
+                f"Error getting workspace runner: {e}",
+                exc_info=True,
+            )
+            raise
+
+    async def stream_query(self, request, *args, **kwargs):
+        """Dynamically route to the correct workspace runner."""
+        logger.debug("DynamicMultiAgentRunner.stream_query called")
+        try:
+            runner = await self._get_workspace_runner(request)
+            logger.debug(f"Got runner: {runner}, type: {type(runner)}")
+            # Delegate to the actual runner's stream_query generator
+            count = 0
+            async for item in runner.stream_query(request, *args, **kwargs):
+                count += 1
+                logger.debug(f"Yielding item #{count}: {type(item)}")
+                yield item
+            logger.debug(f"stream_query completed, yielded {count} items")
+        except Exception as e:
+            logger.error(
+                f"Error in stream_query: {e}",
+                exc_info=True,
+            )
+            # Yield error message to client
+            yield {
+                "error": str(e),
+                "type": "error",
+            }
+
+    async def query_handler(self, request, *args, **kwargs):
+        """Dynamically route to the correct workspace runner."""
+        runner = await self._get_workspace_runner(request)
+        # Delegate to the actual runner's query_handler generator
+        async for item in runner.query_handler(request, *args, **kwargs):
+            yield item
+
+    # Async context manager support for AgentApp lifecycle
+    async def __aenter__(self):
+        """
+        No-op context manager entry (workspaces manage their own runners).
+        """
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """No-op context manager exit (workspaces manage their own runners)."""
+        return None
+
+
+# Use dynamic runner for AgentApp
+runner = DynamicMultiAgentRunner()
 
 agent_app = AgentApp(
     app_name="Friday",
-    app_description="A helpful assistant",
+    app_description="A helpful assistant with background task support",
     runner=runner,
+    enable_stream_task=True,
+    stream_task_queue="stream_query",
+    stream_task_timeout=300,
 )
 
 
@@ -70,401 +171,138 @@ agent_app = AgentApp(
 async def lifespan(
     app: FastAPI,
 ):  # pylint: disable=too-many-statements,too-many-branches
+    startup_start_time = time.time()
     add_copaw_file_handler(WORKING_DIR / "copaw.log")
-    await runner.start()
+
+    from .auth import auto_register_from_env
+
+    auto_register_from_env()
+
+    try:
+        from ..utils.telemetry import (
+            collect_and_upload_telemetry,
+            has_telemetry_been_collected,
+            is_telemetry_opted_out,
+        )
+
+        if not is_telemetry_opted_out(
+            WORKING_DIR,
+        ) and not has_telemetry_been_collected(WORKING_DIR):
+            collect_and_upload_telemetry(WORKING_DIR)
+    except Exception:
+        logger.debug(
+            "Telemetry collection skipped due to error",
+            exc_info=True,
+        )
+
+    # --- Multi-agent migration and initialization ---
+    logger.info("Checking for legacy config migration...")
+    migrate_legacy_workspace_to_default_agent()
+    ensure_default_agent_exists()
+    migrate_legacy_skills_to_skill_pool()
+    ensure_qa_agent_exists()
+
+    # --- Multi-agent manager initialization ---
+    logger.info("Initializing MultiAgentManager...")
+    multi_agent_manager = MultiAgentManager()
 
     _storage_iso = copaw_storage_isolation_enabled()
-
-    # --- MCP client manager init (root config; per-user MCP when isolated) ---
-    config = load_config(get_config_path())
-    mcp_manager = MCPClientManager()
-    if not _storage_iso and hasattr(config, "mcp"):
-        try:
-            await mcp_manager.init_from_config(config.mcp)
-            runner.set_mcp_manager(mcp_manager)
-            logger.debug("MCP client manager initialized")
-        except Exception:
-            logger.exception("Failed to initialize MCP manager")
-    else:
-        runner.set_mcp_manager(None)
-        if _storage_iso:
-            logger.debug("Storage isolation: MCP is per-user (not global manager)")
-
-    # --- channel connector init/start (from config.json) ---
-    channel_manager = ChannelManager.from_config(
-        process=make_process_from_runner(runner),
-        config=config,
-        on_last_dispatch=update_last_dispatch,
-    )
-    await channel_manager.start_all()
-
-    # --- cron init/start ---
+    _iso_chat_factory = None
     if _storage_iso:
-        job_repo: AggregatingJobRepository | JsonJobRepository = (
-            AggregatingJobRepository(include_legacy=True)
+        from .workspace.service_factories import (
+            get_chat_manager_for_isolated_user,
+            set_isolation_chat_manager_factory,
         )
-    else:
-        job_repo = JsonJobRepository(get_jobs_path())
-    cron_manager = CronManager(
-        repo=job_repo,
-        runner=runner,
-        channel_manager=channel_manager,
-        timezone="UTC",
-        storage_isolation_enabled=_storage_iso,
+
+        _iso_chat_factory = get_chat_manager_for_isolated_user
+        set_isolation_chat_manager_factory(_iso_chat_factory)
+
+    # Start all configured agents (handled by manager)
+    await multi_agent_manager.start_all_configured_agents()
+
+    # --- Model provider manager (non-reloadable, in-memory) ---
+    provider_manager = ProviderManager.get_instance()
+
+    # --- Local model manager initialization ---
+    local_model_manager = LocalModelManager.get_instance()
+
+    # Expose to endpoints - multi-agent manager
+    app.state.multi_agent_manager = multi_agent_manager
+
+    # Connect DynamicMultiAgentRunner to MultiAgentManager
+    if isinstance(runner, DynamicMultiAgentRunner):
+        runner.set_multi_agent_manager(multi_agent_manager)
+
+    # Helper function to get agent instance by ID (async)
+    async def _get_agent_by_id(agent_id: str = None):
+        """Get agent instance by ID, or active agent if not specified."""
+        cfg_path = get_effective_config_path()
+        if agent_id is None:
+            config = load_config(cfg_path)
+            agent_id = config.agents.active_agent or "default"
+        return await multi_agent_manager.get_agent(
+            agent_id,
+            config_path=cfg_path,
+        )
+
+    app.state.get_agent_by_id = _get_agent_by_id
+
+    if _storage_iso and _iso_chat_factory is not None:
+        app.state.chat_manager_factory = _iso_chat_factory
+
+    # Global managers (shared across all agents)
+    app.state.provider_manager = provider_manager
+    app.state.local_model_manager = local_model_manager
+
+    provider_manager.start_local_model_resume(local_model_manager)
+
+    # Setup approval service with default agent's channel_manager (global only;
+    # isolated tenants lazy-load workspaces per request).
+    if not copaw_storage_isolation_enabled():
+        default_agent = await multi_agent_manager.get_agent("default")
+        if default_agent.channel_manager:
+            from .approvals import get_approval_service
+
+            get_approval_service().set_channel_manager(
+                default_agent.channel_manager,
+            )
+
+    startup_elapsed = time.time() - startup_start_time
+    logger.debug(
+        f"Application startup completed in {startup_elapsed:.3f} seconds",
     )
-    await cron_manager.start()
-
-    # --- chat manager init and connect to runner.session ---
-    # Per-user ChatManager (always uses users/<user_id>/chats.json).
-    _chat_manager_cache: dict = {}
-
-    def _get_chat_manager_for_user(user_id: Optional[str]) -> ChatManager:
-        """Return ChatManager for user. Always uses per-user repo."""
-        cache_key = user_id or "default"
-        if cache_key not in _chat_manager_cache:
-            path = get_chats_path_for_user(user_id)
-            _chat_manager_cache[cache_key] = ChatManager(
-                repo=JsonChatRepository(path),
-            )
-        return _chat_manager_cache[cache_key]
-
-    # Runner uses factory so agent/process can get per-user manager
-    runner.set_chat_manager(_get_chat_manager_for_user)
-
-    # --- config file watcher (channels + heartbeat hot-reload on change) ---
-    config_watcher = ConfigWatcher(
-        channel_manager=channel_manager,
-        cron_manager=cron_manager,
-        storage_isolation_enabled=_storage_iso,
-    )
-    await config_watcher.start()
-
-    # --- MCP config watcher (auto-reload MCP clients on change) ---
-    mcp_watcher = None
-    if not _storage_iso and hasattr(config, "mcp"):
-        try:
-            mcp_watcher = MCPConfigWatcher(
-                mcp_manager=mcp_manager,
-                config_loader=load_config,
-                config_path=get_config_path(),
-            )
-            await mcp_watcher.start()
-            logger.debug("MCP config watcher started")
-        except Exception:
-            logger.exception("Failed to start MCP watcher")
-
-    # expose to endpoints
-    app.state.runner = runner
-    app.state.channel_manager = channel_manager
-    app.state.cron_manager = cron_manager
-    app.state.chat_manager_factory = _get_chat_manager_for_user
-    app.state.config_watcher = config_watcher
-    app.state.mcp_manager = mcp_manager
-    app.state.mcp_watcher = mcp_watcher
-
-    _restart_task: asyncio.Task | None = None
-
-    async def _restart_services() -> None:
-        """Stop all managers, then rebuild from config (no exit).
-
-        Single-flight: only one restart runs at a time. Concurrent or
-        duplicate callers wait for the in-progress restart and return
-        successfully. Uses asyncio.shield() so that when the caller
-        (e.g. channel request) is cancelled, the restart task keeps
-        running and does not propagate cancellation into deep task
-        trees (avoids RecursionError on cancel).
-        """
-        # pylint: disable=too-many-statements
-        nonlocal _restart_task
-        # Caller task (in _local_tasks) must not be cancelled so it can
-        # yield the final "Restart completed" message.
-        restart_requester_task = asyncio.current_task()
-
-        async def _run_then_clear() -> None:
-            try:
-                await _do_restart_services(
-                    restart_requester_task=restart_requester_task,
-                )
-            finally:
-                nonlocal _restart_task
-                _restart_task = None
-
-        if _restart_task is not None and not _restart_task.done():
-            logger.info(
-                "_restart_services: waiting for in-progress restart to finish",
-            )
-            await asyncio.shield(_restart_task)
-            return
-        if _restart_task is not None and _restart_task.done():
-            _restart_task = None
-        logger.info("_restart_services: starting restart")
-        _restart_task = asyncio.create_task(_run_then_clear())
-        await asyncio.shield(_restart_task)
-
-    async def _teardown_new_stack(
-        mcp_watcher=None,
-        config_watcher=None,
-        cron_mgr=None,
-        ch_mgr=None,
-        mcp_mgr=None,
-    ) -> None:
-        """Stop new stack in reverse start order (for rollback on failure)."""
-        if mcp_watcher is not None:
-            try:
-                await mcp_watcher.stop()
-            except Exception:
-                logger.debug(
-                    "rollback: mcp_watcher.stop failed",
-                    exc_info=True,
-                )
-        if config_watcher is not None:
-            try:
-                await config_watcher.stop()
-            except Exception:
-                logger.debug(
-                    "rollback: config_watcher.stop failed",
-                    exc_info=True,
-                )
-        if cron_mgr is not None:
-            try:
-                await cron_mgr.stop()
-            except Exception:
-                logger.debug(
-                    "rollback: cron_manager.stop failed",
-                    exc_info=True,
-                )
-        if ch_mgr is not None:
-            try:
-                await ch_mgr.stop_all()
-            except Exception:
-                logger.debug(
-                    "rollback: channel_manager.stop_all failed",
-                    exc_info=True,
-                )
-        if mcp_mgr is not None:
-            try:
-                await mcp_mgr.close_all()
-            except Exception:
-                logger.debug(
-                    "rollback: mcp_manager.close_all failed",
-                    exc_info=True,
-                )
-
-    async def _do_restart_services(
-        restart_requester_task: asyncio.Task | None = None,
-    ) -> None:
-        """Cancel in-flight agent requests first (so they can send error to
-        channel), then stop old stack, then start new stack and swap.
-        """
-        # pylint: disable=too-many-statements
-        try:
-            config = load_config(get_config_path())
-        except Exception:
-            logger.exception("restart_services: load_config failed")
-            return
-
-        # 1) Cancel in-flight agent requests. Do not wait for them so the
-        # console restart task never blocks (avoid deadlock when cancelled
-        # task is slow to exit).
-        local_tasks = getattr(agent_app, "_local_tasks", None)
-        if local_tasks:
-            to_cancel = [
-                t
-                for t in list(local_tasks.values())
-                if t is not restart_requester_task and not t.done()
-            ]
-            for t in to_cancel:
-                t.cancel()
-            if to_cancel:
-                logger.info(
-                    "restart: cancelled %s in-flight task(s), not waiting",
-                    len(to_cancel),
-                )
-
-        # 2) Stop old stack
-        cfg_w = app.state.config_watcher
-        mcp_w = getattr(app.state, "mcp_watcher", None)
-        cron_mgr = app.state.cron_manager
-        ch_mgr = app.state.channel_manager
-        mcp_mgr = app.state.mcp_manager
-        try:
-            await cfg_w.stop()
-        except Exception:
-            logger.exception(
-                "restart_services: old config_watcher.stop failed",
-            )
-        if mcp_w is not None:
-            try:
-                await mcp_w.stop()
-            except Exception:
-                logger.exception(
-                    "restart_services: old mcp_watcher.stop failed",
-                )
-        try:
-            await cron_mgr.stop()
-        except Exception:
-            logger.exception(
-                "restart_services: old cron_manager.stop failed",
-            )
-        try:
-            await ch_mgr.stop_all()
-        except Exception:
-            logger.exception(
-                "restart_services: old channel_manager.stop_all failed",
-            )
-        if mcp_mgr is not None:
-            try:
-                await mcp_mgr.close_all()
-            except Exception:
-                logger.exception(
-                    "restart_services: old mcp_manager.close_all failed",
-                )
-        try:
-            await runner.shutdown_mcp_managers_cache()
-        except Exception:
-            logger.exception(
-                "restart_services: runner.shutdown_mcp_managers_cache failed",
-            )
-
-        # 3) Build and start new stack
-        _rs_iso = copaw_storage_isolation_enabled()
-        new_mcp_manager = MCPClientManager()
-        if not _rs_iso and hasattr(config, "mcp"):
-            try:
-                await new_mcp_manager.init_from_config(config.mcp)
-            except Exception:
-                logger.exception(
-                    "restart_services: mcp init_from_config failed",
-                )
-                return
-
-        new_channel_manager = ChannelManager.from_config(
-            process=make_process_from_runner(runner),
-            config=config,
-            on_last_dispatch=update_last_dispatch,
-        )
-        try:
-            await new_channel_manager.start_all()
-        except Exception:
-            logger.exception(
-                "restart_services: channel_manager.start_all failed",
-            )
-            await _teardown_new_stack(mcp_mgr=new_mcp_manager)
-            return
-
-        if _rs_iso:
-            new_job_repo = AggregatingJobRepository(include_legacy=True)
-        else:
-            new_job_repo = JsonJobRepository(get_jobs_path())
-        new_cron_manager = CronManager(
-            repo=new_job_repo,
-            runner=runner,
-            channel_manager=new_channel_manager,
-            timezone="UTC",
-            storage_isolation_enabled=_rs_iso,
-        )
-        try:
-            await new_cron_manager.start()
-        except Exception:
-            logger.exception(
-                "restart_services: cron_manager.start failed",
-            )
-            await _teardown_new_stack(
-                ch_mgr=new_channel_manager,
-                mcp_mgr=new_mcp_manager,
-            )
-            return
-
-        new_config_watcher = ConfigWatcher(
-            channel_manager=new_channel_manager,
-            cron_manager=new_cron_manager,
-            storage_isolation_enabled=_rs_iso,
-        )
-        try:
-            await new_config_watcher.start()
-        except Exception:
-            logger.exception(
-                "restart_services: config_watcher.start failed",
-            )
-            await _teardown_new_stack(
-                cron_mgr=new_cron_manager,
-                ch_mgr=new_channel_manager,
-                mcp_mgr=new_mcp_manager,
-            )
-            return
-
-        new_mcp_watcher = None
-        if not _rs_iso and hasattr(config, "mcp"):
-            try:
-                new_mcp_watcher = MCPConfigWatcher(
-                    mcp_manager=new_mcp_manager,
-                    config_loader=load_config,
-                    config_path=get_config_path(),
-                )
-                await new_mcp_watcher.start()
-            except Exception:
-                logger.exception(
-                    "restart_services: mcp_watcher.start failed",
-                )
-                await _teardown_new_stack(
-                    config_watcher=new_config_watcher,
-                    cron_mgr=new_cron_manager,
-                    ch_mgr=new_channel_manager,
-                    mcp_mgr=new_mcp_manager,
-                )
-                return
-
-        if not _rs_iso and hasattr(config, "mcp"):
-            runner.set_mcp_manager(new_mcp_manager)
-            app.state.mcp_manager = new_mcp_manager
-            app.state.mcp_watcher = new_mcp_watcher
-        else:
-            runner.set_mcp_manager(None)
-            app.state.mcp_manager = None
-            app.state.mcp_watcher = None
-        app.state.channel_manager = new_channel_manager
-        app.state.cron_manager = new_cron_manager
-        app.state.config_watcher = new_config_watcher
-        logger.info("Daemon restart (in-process) completed: managers rebuilt")
-
-    setattr(runner, "_restart_callback", _restart_services)
 
     try:
         yield
     finally:
-        # Stop current app.state refs (post-restart instances if any)
-        cfg_w = getattr(app.state, "config_watcher", None)
-        mcp_w = getattr(app.state, "mcp_watcher", None)
-        cron_mgr = getattr(app.state, "cron_manager", None)
-        ch_mgr = getattr(app.state, "channel_manager", None)
-        mcp_mgr = getattr(app.state, "mcp_manager", None)
-        # stop order: watchers -> cron -> channels -> mcp -> runner
-        if cfg_w is not None:
+        from .workspace import service_factories as _svc_factories
+
+        _svc_factories.set_isolation_chat_manager_factory(None)
+        _svc_factories.reset_isolation_chat_manager_cache()
+
+        local_model_mgr = getattr(app.state, "local_model_manager", None)
+        if local_model_mgr is not None:
+            logger.info("Stopping local model server...")
             try:
-                await cfg_w.stop()
-            except Exception:
-                pass
-        if mcp_w is not None:
+                await local_model_mgr.shutdown_server()
+            except Exception as exc:
+                logger.error(
+                    "Error shutting down local model server gracefully: %s",
+                    exc,
+                )
+                with suppress(OSError, RuntimeError, ValueError):
+                    local_model_mgr.force_shutdown_server()
+
+        # Stop multi-agent manager (stops all agents and their components)
+        multi_agent_mgr = getattr(app.state, "multi_agent_manager", None)
+        if multi_agent_mgr is not None:
+            logger.info("Stopping MultiAgentManager...")
             try:
-                await mcp_w.stop()
-            except Exception:
-                pass
-        if cron_mgr is not None:
-            try:
-                await cron_mgr.stop()
-            except Exception:
-                pass
-        if ch_mgr is not None:
-            try:
-                await ch_mgr.stop_all()
-            except Exception:
-                pass
-        if mcp_mgr is not None:
-            try:
-                await mcp_mgr.close_all()
-            except Exception:
-                pass
-        await runner.stop()
+                await multi_agent_mgr.stop_all()
+            except Exception as e:
+                logger.error(f"Error stopping MultiAgentManager: {e}")
+
+        logger.info("Application shutdown complete")
 
 
 app = FastAPI(
@@ -474,10 +312,12 @@ app = FastAPI(
     openapi_url="/openapi.json" if DOCS_ENABLED else None,
 )
 
-# Agent process: inject user_id from JWT when LAZY_PLATFORM_KEY is set
-app.add_middleware(AgentProcessUserInjectMiddleware)
-# Set user_id in context from JWT for all requests (runner uses when request.user_id empty)
+# Outermost first: auth → agent routing → LCAgent JWT →
+# /api/agent/process body inject
+app.add_middleware(AuthMiddleware)
+app.add_middleware(AgentContextMiddleware)
 app.add_middleware(UserIdContextMiddleware)
+app.add_middleware(AgentProcessUserInjectMiddleware)
 
 # Apply CORS middleware if CORS_ORIGINS is set
 if CORS_ORIGINS:
@@ -488,6 +328,7 @@ if CORS_ORIGINS:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
     )
 
 
@@ -495,37 +336,48 @@ if CORS_ORIGINS:
 _CONSOLE_STATIC_ENV = "COPAW_CONSOLE_STATIC_DIR"
 
 
-def _resolve_console_static_dir() -> str:
+def _resolve_console_static_dir() -> str:  # pylint: disable=too-many-return-statements
     env_dir = os.environ.get(_CONSOLE_STATIC_ENV)
     if env_dir:
         candidate = Path(env_dir)
         if (candidate / "index.html").exists():
             return env_dir
-        # lcClaw 控制台未构建时回退到默认 copaw 控制台
         logger.warning(
-            "COPAW_CONSOLE_STATIC_DIR=%s 无 index.html，回退到默认控制台", env_dir
+            "COPAW_CONSOLE_STATIC_DIR=%s 无 index.html，回退到默认控制台",
+            env_dir,
         )
-    # 默认：copaw 包内 console（优先 venv 安装的包，含完整 console）
-    candidates = []
+    pkg_dir = Path(__file__).resolve().parent.parent
+    candidate = pkg_dir / "console"
+    if candidate.is_dir() and (candidate / "index.html").exists():
+        return str(candidate)
     try:
         import copaw
 
-        candidates.append(Path(copaw.__file__).resolve().parent / "console")
+        c = Path(copaw.__file__).resolve().parent / "console"
+        if c.is_dir() and (c / "index.html").exists():
+            return str(c)
     except ImportError:
         pass
-    candidates.append(Path(__file__).resolve().parent.parent / "console")
-    # venv 中安装的 copaw 包（PYTHONPATH 优先时源码可能无 console）
     for site in __import__("site").getsitepackages():
-        candidates.append(Path(site) / "copaw" / "console")
-    for candidate in candidates:
-        if candidate.is_dir() and (candidate / "index.html").exists():
-            return str(candidate)
+        c = Path(site) / "copaw" / "console"
+        if c.is_dir() and (c / "index.html").exists():
+            return str(c)
+    repo_dir = pkg_dir.parent.parent
+    candidate = repo_dir / "console" / "dist"
+    if candidate.is_dir() and (candidate / "index.html").exists():
+        return str(candidate)
+
     cwd = Path(os.getcwd())
     for subdir in ("console/dist", "console_dist"):
         candidate = cwd / subdir
         if candidate.is_dir() and (candidate / "index.html").exists():
             return str(candidate)
-    return str(cwd / "console" / "dist")
+
+    fallback = cwd / "console" / "dist"
+    logger.warning(
+        f"Console static directory not found. Falling back to '{fallback}'.",
+    )
+    return str(fallback)
 
 
 _CONSOLE_STATIC_DIR = _resolve_console_static_dir()
@@ -544,7 +396,8 @@ def read_root():
             "CoPaw Web Console is not available. "
             "If you installed CoPaw from source code, please run "
             "`npm ci && npm run build` in CoPaw's `console/` "
-            "directory, and restart CoPaw to enable the web console."
+            "directory, and restart CoPaw to enable the "
+            "web console."
         ),
     }
 
@@ -557,6 +410,11 @@ def get_version():
 
 app.include_router(api_router, prefix="/api")
 
+# Agent-scoped router: /api/agents/{agentId}/chats, etc.
+agent_scoped_router = create_agent_scoped_router()
+app.include_router(agent_scoped_router, prefix="/api")
+
+
 app.include_router(
     agent_app.router,
     prefix="/api/agent",
@@ -567,17 +425,32 @@ app.include_router(
 # POST /voice/incoming, WS /voice/ws, POST /voice/status-callback
 app.include_router(voice_router, tags=["voice"])
 
-# Mount console: root static files (logo.png etc.) then assets, then SPA
-# fallback.
+# Custom channel routes (before SPA catch-all to ensure route priority)
+register_custom_channel_routes(app)
+
+# Console static files and SPA fallback
+# Register these AFTER API routes to ensure proper routing priority
 if os.path.isdir(_CONSOLE_STATIC_DIR):
     _console_path = Path(_CONSOLE_STATIC_DIR)
+
+    def _serve_console_index():
+        if _CONSOLE_INDEX and _CONSOLE_INDEX.exists():
+            return FileResponse(_CONSOLE_INDEX)
+
+        raise HTTPException(status_code=404, detail="Not Found")
 
     @app.get("/logo.png")
     def _console_logo():
         f = _console_path / "logo.png"
         if f.is_file():
             return FileResponse(f, media_type="image/png")
+        raise HTTPException(status_code=404, detail="Not Found")
 
+    @app.get("/dark-logo.png")
+    def _console_dark_logo():
+        f = _console_path / "dark-logo.png"
+        if f.is_file():
+            return FileResponse(f, media_type="image/png")
         raise HTTPException(status_code=404, detail="Not Found")
 
     @app.get("/copaw-symbol.svg")
@@ -585,7 +458,13 @@ if os.path.isdir(_CONSOLE_STATIC_DIR):
         f = _console_path / "copaw-symbol.svg"
         if f.is_file():
             return FileResponse(f, media_type="image/svg+xml")
+        raise HTTPException(status_code=404, detail="Not Found")
 
+    @app.get("/copaw-dark.png")
+    def _console_dark_icon():
+        f = _console_path / "copaw-dark.png"
+        if f.is_file():
+            return FileResponse(f, media_type="image/png")
         raise HTTPException(status_code=404, detail="Not Found")
 
     _assets_dir = _console_path / "assets"
@@ -596,9 +475,21 @@ if os.path.isdir(_CONSOLE_STATIC_DIR):
             name="assets",
         )
 
+    @app.get("/console")
+    @app.get("/console/")
+    @app.get("/console/{full_path:path}")
+    def _console_spa_alias(full_path: str = ""):
+        _ = full_path
+        return _serve_console_index()
+
+    # SPA fallback: catch-all route for frontend routing
+    # Must be registered AFTER all API routes to avoid conflicts
     @app.get("/{full_path:path}")
     def _console_spa(full_path: str):
-        if _CONSOLE_INDEX and _CONSOLE_INDEX.exists():
-            return FileResponse(_CONSOLE_INDEX)
-
-        raise HTTPException(status_code=404, detail="Not Found")
+        # Prevent catching common system/special paths
+        if full_path in ("docs", "redoc", "openapi.json"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        # Skip API routes (should already be matched due to registration order)
+        if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(status_code=404, detail="Not Found")
+        return _serve_console_index()
