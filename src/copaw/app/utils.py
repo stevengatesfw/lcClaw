@@ -46,9 +46,13 @@ def schedule_agent_reload(request: "Request", agent_id: str) -> None:
         )
         return
 
+    from .storage_deps import get_request_config_path
+
+    config_path = get_request_config_path(request)
+
     async def reload_in_background():
         try:
-            await manager.reload_agent(agent_id)
+            await manager.reload_agent(agent_id, config_path=config_path)
         except Exception as e:
             logger.warning(
                 f"Background reload failed for agent '{agent_id}': {e}",

@@ -102,7 +102,9 @@ class BaseChannel(ABC):
         self.require_mention = require_mention
         self._enqueue: EnqueueCallback = None
         self._workspace = None
-        cfg = load_config()
+        from ...context import get_effective_config_path
+
+        cfg = load_config(get_effective_config_path())
         internal_tools = frozenset(
             name
             for name, tc in cfg.tools.builtin_tools.items()

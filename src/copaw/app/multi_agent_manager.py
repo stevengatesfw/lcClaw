@@ -6,12 +6,22 @@ including lazy loading, lifecycle management, and hot reloading.
 """
 import asyncio
 import logging
-from typing import Dict, Set
+from pathlib import Path
+from typing import Dict, Optional, Set, Tuple
 
 from .workspace import Workspace
-from ..config.utils import load_config
+from ..config.utils import (
+    copaw_storage_isolation_enabled,
+    get_config_path,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _workspace_cache_key(config_path: Path, agent_id: str) -> Tuple[str, str]:
+    """Stable key for (tenant config file, agent id)."""
+    return (str(config_path.expanduser().resolve()), agent_id)
 
 
 class MultiAgentManager:
@@ -26,12 +36,16 @@ class MultiAgentManager:
 
     def __init__(self):
         """Initialize multi-agent manager."""
-        self.agents: Dict[str, Workspace] = {}
+        self.agents: Dict[Tuple[str, str], Workspace] = {}
         self._lock = asyncio.Lock()
         self._cleanup_tasks: Set[asyncio.Task] = set()
         logger.debug("MultiAgentManager initialized")
 
-    async def get_agent(self, agent_id: str) -> Workspace:
+    async def get_agent(
+        self,
+        agent_id: str,
+        config_path: Optional[Path] = None,
+    ) -> Workspace:
         """Get agent workspace by ID (lazy loading).
 
         If workspace doesn't exist in memory, it will be created and started.
@@ -39,6 +53,7 @@ class MultiAgentManager:
 
         Args:
             agent_id: Agent ID to retrieve
+            config_path: Root ``config.json`` for agent profiles; default global.
 
         Returns:
             Workspace: The requested workspace instance
@@ -46,14 +61,20 @@ class MultiAgentManager:
         Raises:
             ValueError: If agent ID not found in configuration
         """
-        async with self._lock:
-            # Return existing agent if already loaded
-            if agent_id in self.agents:
-                logger.debug(f"Returning cached agent: {agent_id}")
-                return self.agents[agent_id]
+        if config_path is None:
+            config_path = get_config_path()
+        cache_key = _workspace_cache_key(config_path, agent_id)
 
-            # Load configuration to get agent reference
-            config = load_config()
+        async with self._lock:
+            if cache_key in self.agents:
+                logger.debug(
+                    "Returning cached agent: %s scope=%s...",
+                    agent_id,
+                    cache_key[0][:40],
+                )
+                return self.agents[cache_key]
+
+            config = load_config(config_path)
 
             if agent_id not in config.agents.profiles:
                 raise ValueError(
@@ -63,7 +84,6 @@ class MultiAgentManager:
 
             agent_ref = config.agents.profiles[agent_id]
 
-            # Create and start new workspace
             logger.info(f"Creating new workspace: {agent_id}")
             instance = Workspace(
                 agent_id=agent_id,
@@ -72,8 +92,8 @@ class MultiAgentManager:
 
             try:
                 await instance.start()
-                instance.set_manager(self)  # Set manager reference
-                self.agents[agent_id] = instance
+                instance.set_manager(self)
+                self.agents[cache_key] = instance
                 logger.info(f"Workspace created and started: {agent_id}")
                 return instance
             except Exception as e:
@@ -177,27 +197,40 @@ class MultiAgentManager:
                     f"New instance is active and serving requests.",
                 )
 
-    async def stop_agent(self, agent_id: str) -> bool:
+    async def stop_agent(
+        self,
+        agent_id: str,
+        config_path: Optional[Path] = None,
+    ) -> bool:
         """Stop a specific agent instance.
 
         Args:
             agent_id: Agent ID to stop
+            config_path: Config scope; default global ``get_config_path()``.
 
         Returns:
             bool: True if agent was stopped, False if not running
         """
+        if config_path is None:
+            config_path = get_config_path()
+        cache_key = _workspace_cache_key(config_path, agent_id)
+
         async with self._lock:
-            if agent_id not in self.agents:
+            if cache_key not in self.agents:
                 logger.warning(f"Agent not running: {agent_id}")
                 return False
 
-            instance = self.agents[agent_id]
+            instance = self.agents[cache_key]
             await instance.stop()
-            del self.agents[agent_id]
+            del self.agents[cache_key]
             logger.info(f"Agent stopped and removed: {agent_id}")
             return True
 
-    async def reload_agent(self, agent_id: str) -> bool:
+    async def reload_agent(
+        self,
+        agent_id: str,
+        config_path: Optional[Path] = None,
+    ) -> bool:
         """Reload a specific agent instance with zero-downtime.
 
         This method performs a seamless reload by:
@@ -219,24 +252,29 @@ class MultiAgentManager:
 
         Args:
             agent_id: Agent ID to reload
+            config_path: Config scope; default global ``get_config_path()``.
 
         Returns:
             bool: True if agent was reloaded, False if not running
         """
+        if config_path is None:
+            config_path = get_config_path()
+        cache_key = _workspace_cache_key(config_path, agent_id)
+
         # Step 1: Check if agent exists (quick check with lock)
         async with self._lock:
-            if agent_id not in self.agents:
+            if cache_key not in self.agents:
                 logger.debug(
                     f"Agent not running, will be loaded on next "
                     f"request: {agent_id}",
                 )
                 return False
-            old_instance = self.agents[agent_id]
+            old_instance = self.agents[cache_key]
 
         logger.info(f"Reloading agent (zero-downtime): {agent_id}")
 
         # Step 2: Load configuration (outside lock)
-        config = load_config()
+        config = load_config(config_path)
         if agent_id not in config.agents.profiles:
             logger.error(
                 f"Agent '{agent_id}' not found in configuration "
@@ -256,7 +294,7 @@ class MultiAgentManager:
 
         # Step 3.5: Set reusable components from old instance (if any)
         async with self._lock:
-            old_instance = self.agents.get(agent_id)
+            old_instance = self.agents.get(cache_key)
 
         if old_instance:
             # Get all reusable services from old instance's ServiceManager
@@ -291,7 +329,7 @@ class MultiAgentManager:
         # From this point, reload is considered successful
         async with self._lock:
             # Double-check agent still exists
-            if agent_id not in self.agents:
+            if cache_key not in self.agents:
                 logger.warning(
                     f"Agent {agent_id} was removed during reload, "
                     f"stopping new instance",
@@ -300,8 +338,8 @@ class MultiAgentManager:
                 return False
 
             # Swap instances atomically
-            old_instance = self.agents[agent_id]
-            self.agents[agent_id] = new_instance
+            old_instance = self.agents[cache_key]
+            self.agents[cache_key] = new_instance
             logger.info(f"Workspace instance replaced: {agent_id}")
 
         # Step 5: Gracefully stop old instance (outside lock)
@@ -346,50 +384,62 @@ class MultiAgentManager:
         # First, cancel pending cleanup tasks to avoid orphaned instances
         await self.cancel_all_cleanup_tasks()
 
-        # Create list of agent IDs to avoid modifying dict during iteration
-        agent_ids = list(self.agents.keys())
+        cache_keys = list(self.agents.keys())
 
-        for agent_id in agent_ids:
+        for cache_key in cache_keys:
             try:
-                instance = self.agents[agent_id]
+                instance = self.agents[cache_key]
                 await instance.stop()
-                logger.debug(f"Agent stopped: {agent_id}")
+                logger.debug("Agent stopped: %s", cache_key[1])
             except Exception as e:
-                logger.error(f"Error stopping agent {agent_id}: {e}")
+                logger.error("Error stopping agent %s: %s", cache_key[1], e)
 
         self.agents.clear()
         logger.info("All agents stopped")
 
     def list_loaded_agents(self) -> list[str]:
-        """List currently loaded agent IDs.
+        """List currently loaded agent IDs with scope (for debugging).
 
         Returns:
-            list[str]: List of loaded agent IDs
+            list[str]: ``agent_id@<config_path>`` per loaded workspace
         """
-        return list(self.agents.keys())
+        return [f"{aid}@{scope}" for scope, aid in self.agents.keys()]
 
-    def is_agent_loaded(self, agent_id: str) -> bool:
+    def is_agent_loaded(
+        self,
+        agent_id: str,
+        config_path: Optional[Path] = None,
+    ) -> bool:
         """Check if agent is currently loaded.
 
         Args:
             agent_id: Agent ID to check
+            config_path: Config scope; default global ``get_config_path()``.
 
         Returns:
             bool: True if agent is loaded and running
         """
-        return agent_id in self.agents
+        if config_path is None:
+            config_path = get_config_path()
+        cache_key = _workspace_cache_key(config_path, agent_id)
+        return cache_key in self.agents
 
-    async def preload_agent(self, agent_id: str) -> bool:
+    async def preload_agent(
+        self,
+        agent_id: str,
+        config_path: Optional[Path] = None,
+    ) -> bool:
         """Preload an agent instance during startup.
 
         Args:
             agent_id: Agent ID to preload
+            config_path: Config scope; default global ``get_config_path()``.
 
         Returns:
             bool: True if successfully preloaded, False if failed
         """
         try:
-            await self.get_agent(agent_id)
+            await self.get_agent(agent_id, config_path=config_path)
             logger.info(f"Successfully preloaded agent: {agent_id}")
             return True
         except Exception as e:
@@ -402,9 +452,19 @@ class MultiAgentManager:
         Only agents with enabled=True will be started.
         Disabled agents are skipped to save resources.
 
+        When storage isolation is enabled (LAZY_PLATFORM_KEY), there is no
+        single global tenant to preload; returns empty and relies on lazy load.
+
         Returns:
             dict[str, bool]: Mapping of agent_id to success status
         """
+        if copaw_storage_isolation_enabled():
+            logger.info(
+                "Storage isolation enabled: skipping start_all_configured_agents "
+                "(per-user lazy load)",
+            )
+            return {}
+
         config = load_config()
         # Filter only enabled agents
         enabled_agents = {
@@ -425,11 +485,13 @@ class MultiAgentManager:
             f"({disabled_count} disabled)",
         )
 
+        global_path = get_config_path()
+
         async def start_single_agent(agent_id: str) -> tuple[str, bool]:
             """Start a single agent with error handling."""
             try:
                 logger.info(f"Starting agent: {agent_id}")
-                await self.preload_agent(agent_id)
+                await self.preload_agent(agent_id, config_path=global_path)
                 logger.info(f"Agent started successfully: {agent_id}")
                 return (agent_id, True)
             except Exception as e:
@@ -457,5 +519,5 @@ class MultiAgentManager:
 
     def __repr__(self) -> str:
         """String representation of manager."""
-        loaded = list(self.agents.keys())
+        loaded = self.list_loaded_agents()
         return f"MultiAgentManager(loaded_agents={loaded})"

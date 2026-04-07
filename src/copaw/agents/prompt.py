@@ -217,7 +217,7 @@ def build_system_prompt_from_working_dir(
     """
     from ..constant import WORKING_DIR
     from ..config import load_config
-    from ..context import get_current_working_dir
+    from ..context import get_current_working_dir, get_effective_config_path
 
     # Use provided working_dir, else LCAgent per-user cwd, else global WORKING_DIR
     if working_dir is None:
@@ -228,6 +228,8 @@ def build_system_prompt_from_working_dir(
     if working_dir is None:
         working_dir = Path(WORKING_DIR)
 
+    cfg_path = get_effective_config_path()
+
     # Load enabled files from parameter or config
     if enabled_files is None:
         # Use agent-specific config if agent_id provided
@@ -235,15 +237,15 @@ def build_system_prompt_from_working_dir(
             from ..config.config import load_agent_config
 
             try:
-                agent_config = load_agent_config(agent_id)
+                agent_config = load_agent_config(agent_id, config_path=cfg_path)
                 enabled_files = agent_config.system_prompt_files
             except (ValueError, FileNotFoundError):
                 # Agent not found in config, fallback to global config
-                config = load_config()
+                config = load_config(cfg_path)
                 enabled_files = config.agents.system_prompt_files
         else:
             # Fallback to global config for backward compatibility
-            config = load_config()
+            config = load_config(cfg_path)
             enabled_files = config.agents.system_prompt_files
 
     builder = PromptBuilder(

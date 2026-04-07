@@ -3,17 +3,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List
 
 from fastapi import (
     APIRouter,
     Body,
+    Depends,
     HTTPException,
-    Path,
+    Path as PathParam,
     Request,
 )
 from pydantic import BaseModel, Field
 
+from ..storage_deps import get_request_config_path
 from ..utils import schedule_agent_reload
 from ...config import load_config
 
@@ -35,6 +38,7 @@ class ToolInfo(BaseModel):
 @router.get("", response_model=List[ToolInfo])
 async def list_tools(
     request: Request,
+    config_path: Path = Depends(get_request_config_path),
 ) -> List[ToolInfo]:
     """List all built-in tools and enabled status for active agent.
 
@@ -45,12 +49,15 @@ async def list_tools(
     from ...config.config import load_agent_config
 
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
 
     # Ensure tools config exists with defaults
     if not agent_config.tools or not agent_config.tools.builtin_tools:
         # Fallback to global config if agent config has no tools
-        config = load_config()
+        config = load_config(config_path)
         tools_config = config.tools if hasattr(config, "tools") else None
         if not tools_config:
             return []
@@ -74,8 +81,9 @@ async def list_tools(
 
 @router.patch("/{tool_name}/toggle", response_model=ToolInfo)
 async def toggle_tool(
-    tool_name: str = Path(...),
-    request: Request = None,
+    request: Request,
+    tool_name: str = PathParam(...),
+    config_path: Path = Depends(get_request_config_path),
 ) -> ToolInfo:
     """Toggle tool enabled status for active agent.
 
@@ -93,7 +101,10 @@ async def toggle_tool(
     from ...config.config import load_agent_config, save_agent_config
 
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
 
     if (
         not agent_config.tools
@@ -109,7 +120,11 @@ async def toggle_tool(
     tool_config.enabled = not tool_config.enabled
 
     # Save agent config
-    save_agent_config(workspace.agent_id, agent_config)
+    save_agent_config(
+        workspace.agent_id,
+        agent_config,
+        config_path=config_path,
+    )
 
     # Hot reload config (async, non-blocking)
     schedule_agent_reload(request, workspace.agent_id)
@@ -125,9 +140,10 @@ async def toggle_tool(
 
 @router.patch("/{tool_name}/async-execution", response_model=ToolInfo)
 async def update_tool_async_execution(
-    tool_name: str = Path(...),
+    request: Request,
+    tool_name: str = PathParam(...),
     async_execution: bool = Body(..., embed=True),
-    request: Request = None,
+    config_path: Path = Depends(get_request_config_path),
 ) -> ToolInfo:
     """Update tool async_execution setting for active agent.
 
@@ -146,7 +162,10 @@ async def update_tool_async_execution(
     from ...config.config import load_agent_config, save_agent_config
 
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
 
     if (
         not agent_config.tools
@@ -162,7 +181,11 @@ async def update_tool_async_execution(
     tool_config.async_execution = async_execution
 
     # Save agent config
-    save_agent_config(workspace.agent_id, agent_config)
+    save_agent_config(
+        workspace.agent_id,
+        agent_config,
+        config_path=config_path,
+    )
 
     # Hot reload config (async, non-blocking)
     schedule_agent_reload(request, workspace.agent_id)

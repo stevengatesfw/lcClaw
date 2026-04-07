@@ -69,6 +69,12 @@ logger = logging.getLogger(__name__)
 NamesakeStrategy = Literal["override", "skip", "raise", "rename"]
 
 
+def _is_duplicate_agent_skill_error(exc: BaseException) -> bool:
+    """Toolkit already has this agent skill (name clash across dirs / double list)."""
+    msg = str(exc).lower()
+    return "already registered" in msg and "skill" in msg
+
+
 class CoPawAgent(ToolGuardMixin, ReActAgent):
     """CoPaw Agent with integrated tools, skills, and memory management.
 
@@ -366,13 +372,24 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
 
         working_skills_dir = get_workspace_skills_dir(Path(workspace_dir))
 
-        for skill_name in effective_skills:
+        # Drop duplicate folder names while preserving order (manifest edge cases).
+        seen_folders: list[str] = list(dict.fromkeys(effective_skills))
+
+        for skill_name in seen_folders:
             skill_dir = working_skills_dir / skill_name
             if skill_dir.exists():
                 try:
                     toolkit.register_agent_skill(str(skill_dir))
                     logger.debug("Registered skill: %s", skill_name)
                 except Exception as e:
+                    if _is_duplicate_agent_skill_error(e):
+                        logger.debug(
+                            "Skipped skill folder %r: same logical skill already "
+                            "on toolkit (%s)",
+                            skill_name,
+                            e,
+                        )
+                        continue
                     logger.error(
                         "Failed to register skill '%s': %s",
                         skill_name,

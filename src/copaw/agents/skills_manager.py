@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Optional, TypeVar
 
 import frontmatter
 from pydantic import BaseModel, Field
@@ -883,6 +883,30 @@ def sync_skills_from_active_to_customized(
     return synced_count, skipped_count
 
 
+def _workspace_unsuppress_shared_mirror(
+    workspace_dir: Path,
+    skill_name: str,
+) -> None:
+    """Drop one skill name from suppressed_shared_skills when the user re-adds it."""
+    manifest_path = get_workspace_skill_manifest_path(workspace_dir)
+    skill_key = str(skill_name or "")
+
+    def _update(payload: dict[str, Any]) -> bool:
+        raw = payload.get("suppressed_shared_skills")
+        if not isinstance(raw, list) or skill_key not in raw:
+            return False
+        payload["suppressed_shared_skills"] = [
+            str(x) for x in raw if str(x) != skill_key
+        ]
+        return True
+
+    _mutate_json(
+        manifest_path,
+        _default_workspace_manifest(),
+        _update,
+    )
+
+
 def sync_shared_skills_to_workspace(workspace_dir: Path) -> tuple[int, int]:
     """Mirror platform shared skills into one workspace for registration.
 
@@ -890,6 +914,10 @@ def sync_shared_skills_to_workspace(workspace_dir: Path) -> tuple[int, int]:
     otherwise miss them. We copy platform-enabled shared skills into
     ``<workspace>/skills`` and stamp manifest entries with ``source=shared``.
     Non-shared workspace skills win on name conflicts.
+
+    Names listed under ``suppressed_shared_skills`` in the workspace manifest
+    are skipped so a user can delete a mirrored shared skill without it being
+    immediately re-copied on the next sync.
     """
     shared_dir = get_shared_skills_dir()
     platform_disabled = _load_platform_disabled_skill_names()
@@ -898,6 +926,10 @@ def sync_shared_skills_to_workspace(workspace_dir: Path) -> tuple[int, int]:
 
     previous_manifest = read_skill_manifest(workspace_dir, reconcile=False)
     previous_entries = previous_manifest.get("skills", {})
+    suppressed_raw = previous_manifest.get("suppressed_shared_skills") or []
+    suppressed_shared: set[str] = {
+        str(x) for x in suppressed_raw if x is not None and str(x)
+    }
 
     shared_skills: dict[str, Path] = {}
     if shared_dir is not None and shared_dir.exists():
@@ -910,6 +942,9 @@ def sync_shared_skills_to_workspace(workspace_dir: Path) -> tuple[int, int]:
     managed_names: set[str] = set()
 
     for skill_name, src_dir in sorted(shared_skills.items()):
+        if skill_name in suppressed_shared:
+            skipped_count += 1
+            continue
         previous_entry = previous_entries.get(skill_name) or {}
         previous_source = str(previous_entry.get("source") or "")
         dest_dir = workspace_skills_dir / skill_name
@@ -1497,20 +1532,25 @@ def reconcile_workspace_manifest(workspace_dir: Path) -> dict[str, Any]:
     )
 
 
-def list_workspaces() -> list[dict[str, str]]:
+def list_workspaces(config_path: Optional[Path] = None) -> list[dict[str, str]]:
     """List configured workspaces with agent names."""
     workspaces: list[dict[str, str]] = []
     try:
         from ..config.utils import load_config
         from ..config.config import load_agent_config
+        from ..context import get_effective_config_path
 
-        config = load_config()
+        cfg_path = config_path or get_effective_config_path()
+        config = load_config(cfg_path)
         # Only return agents that are still in the configuration
         # This ensures deleted agents are not included
         for agent_id, profile in sorted(config.agents.profiles.items()):
             agent_name = agent_id
             try:
-                agent_name = load_agent_config(agent_id).name or agent_id
+                agent_name = (
+                    load_agent_config(agent_id, config_path=cfg_path).name
+                    or agent_id
+                )
             except Exception:
                 pass
             workspaces.append(
@@ -1958,6 +1998,11 @@ class SkillService:
                 "requirements": metadata["requirements"],
                 "updated_at": _timestamp(),
             }
+            sup = payload.get("suppressed_shared_skills")
+            if isinstance(sup, list) and skill_name in sup:
+                payload["suppressed_shared_skills"] = [
+                    str(x) for x in sup if str(x) != skill_name
+                ]
 
         _mutate_json(
             get_workspace_skill_manifest_path(self.workspace_dir),
@@ -2199,6 +2244,11 @@ class SkillService:
                     imported.append(skill_name)
 
             if imported:
+                for imported_name in imported:
+                    _workspace_unsuppress_shared_mirror(
+                        self.workspace_dir,
+                        imported_name,
+                    )
                 reconcile_workspace_manifest(self.workspace_dir)
                 if enable:
                     for skill_name in imported:
@@ -2333,12 +2383,19 @@ class SkillService:
         if entry is None or entry.get("enabled", False):
             return False
 
+        was_shared = str(entry.get("source") or "") == "shared"
+
         skill_dir = get_workspace_skills_dir(self.workspace_dir) / skill_name
         if skill_dir.exists():
             shutil.rmtree(skill_dir)
 
         def _update(payload: dict[str, Any]) -> None:
             payload.get("skills", {}).pop(skill_name, None)
+            if was_shared:
+                payload.setdefault("suppressed_shared_skills", [])
+                sup = payload["suppressed_shared_skills"]
+                if isinstance(sup, list) and skill_name not in sup:
+                    sup.append(skill_name)
 
         _mutate_json(
             get_workspace_skill_manifest_path(self.workspace_dir),

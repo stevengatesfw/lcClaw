@@ -6,6 +6,9 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Request
+
+from ..migration import ensure_tenant_default_agent
+from ..storage_deps import get_request_config_path
 from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
@@ -113,9 +116,15 @@ async def send_message(
     # Get multi-agent manager from app state (via request)
     multi_agent_manager = _get_multi_agent_manager(http_request)
 
+    config_path = get_request_config_path(http_request)
+    ensure_tenant_default_agent(config_path)
+
     # Get workspace for the agent
     try:
-        workspace = await multi_agent_manager.get_agent(agent_id)
+        workspace = await multi_agent_manager.get_agent(
+            agent_id,
+            config_path=config_path,
+        )
     except ValueError as e:
         logger.error("Agent not found: %s", e)
         raise HTTPException(

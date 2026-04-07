@@ -5,7 +5,6 @@ import os
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,9 +15,9 @@ from agentscope_runtime.engine.app import AgentApp
 from ..config import load_config  # pylint: disable=no-name-in-module
 from ..config.utils import (
     copaw_storage_isolation_enabled,
-    get_chats_path_for_user,
     get_config_path,
 )
+from ..context import get_effective_config_path
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV, CORS_ORIGINS, WORKING_DIR
 from ..__version__ import __version__
 from ..utils.logging import setup_logger, add_copaw_file_handler
@@ -34,6 +33,7 @@ from ..envs import load_envs_into_environ
 from ..providers.provider_manager import ProviderManager
 from ..local_models.manager import LocalModelManager
 from .multi_agent_manager import MultiAgentManager
+from .storage_deps import resolve_request_config_path
 from .migration import (
     migrate_legacy_workspace_to_default_agent,
     migrate_legacy_skills_to_skill_pool,
@@ -41,8 +41,6 @@ from .migration import (
     ensure_qa_agent_exists,
 )
 from .channels.registry import register_custom_channel_routes
-from .runner.manager import ChatManager
-from .runner.repo.json_repo import JsonChatRepository
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -92,7 +90,11 @@ class DynamicMultiAgentRunner:
             raise RuntimeError("MultiAgentManager not initialized")
 
         try:
-            workspace = await self._multi_agent_manager.get_agent(agent_id)
+            cfg_path = resolve_request_config_path(request)
+            workspace = await self._multi_agent_manager.get_agent(
+                agent_id,
+                config_path=cfg_path,
+            )
             logger.debug(
                 "Got workspace: %s, runner: %s",
                 workspace.agent_id,
@@ -204,6 +206,17 @@ async def lifespan(
     logger.info("Initializing MultiAgentManager...")
     multi_agent_manager = MultiAgentManager()
 
+    _storage_iso = copaw_storage_isolation_enabled()
+    _iso_chat_factory = None
+    if _storage_iso:
+        from .workspace.service_factories import (
+            get_chat_manager_for_isolated_user,
+            set_isolation_chat_manager_factory,
+        )
+
+        _iso_chat_factory = get_chat_manager_for_isolated_user
+        set_isolation_chat_manager_factory(_iso_chat_factory)
+
     # Start all configured agents (handled by manager)
     await multi_agent_manager.start_all_configured_agents()
 
@@ -223,28 +236,19 @@ async def lifespan(
     # Helper function to get agent instance by ID (async)
     async def _get_agent_by_id(agent_id: str = None):
         """Get agent instance by ID, or active agent if not specified."""
+        cfg_path = get_effective_config_path()
         if agent_id is None:
-            config = load_config(get_config_path())
+            config = load_config(cfg_path)
             agent_id = config.agents.active_agent or "default"
-        return await multi_agent_manager.get_agent(agent_id)
+        return await multi_agent_manager.get_agent(
+            agent_id,
+            config_path=cfg_path,
+        )
 
     app.state.get_agent_by_id = _get_agent_by_id
 
-    _storage_iso = copaw_storage_isolation_enabled()
-    _chat_manager_cache: dict = {}
-
-    def _get_chat_manager_for_user(user_id: Optional[str]) -> ChatManager:
-        """LCAgent: per-user chats.json under users/<user_id>/."""
-        cache_key = user_id or "default"
-        if cache_key not in _chat_manager_cache:
-            path = get_chats_path_for_user(user_id)
-            _chat_manager_cache[cache_key] = ChatManager(
-                repo=JsonChatRepository(path),
-            )
-        return _chat_manager_cache[cache_key]
-
-    if _storage_iso:
-        app.state.chat_manager_factory = _get_chat_manager_for_user
+    if _storage_iso and _iso_chat_factory is not None:
+        app.state.chat_manager_factory = _iso_chat_factory
 
     # Global managers (shared across all agents)
     app.state.provider_manager = provider_manager
@@ -252,14 +256,16 @@ async def lifespan(
 
     provider_manager.start_local_model_resume(local_model_manager)
 
-    # Setup approval service with default agent's channel_manager
-    default_agent = await multi_agent_manager.get_agent("default")
-    if default_agent.channel_manager:
-        from .approvals import get_approval_service
+    # Setup approval service with default agent's channel_manager (global only;
+    # isolated tenants lazy-load workspaces per request).
+    if not copaw_storage_isolation_enabled():
+        default_agent = await multi_agent_manager.get_agent("default")
+        if default_agent.channel_manager:
+            from .approvals import get_approval_service
 
-        get_approval_service().set_channel_manager(
-            default_agent.channel_manager,
-        )
+            get_approval_service().set_channel_manager(
+                default_agent.channel_manager,
+            )
 
     startup_elapsed = time.time() - startup_start_time
     logger.debug(
@@ -269,6 +275,11 @@ async def lifespan(
     try:
         yield
     finally:
+        from .workspace import service_factories as _svc_factories
+
+        _svc_factories.set_isolation_chat_manager_factory(None)
+        _svc_factories.reset_isolation_chat_manager_cache()
+
         local_model_mgr = getattr(app.state, "local_model_manager", None)
         if local_model_mgr is not None:
             logger.info("Stopping local model server...")

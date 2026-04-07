@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Agent file management API."""
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from pathlib import Path
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..utils import schedule_agent_reload
@@ -15,6 +17,7 @@ from ...agents.memory.agent_md_manager import AgentMdManager
 from ...agents.utils import copy_builtin_qa_md_files, copy_md_files
 from ...constant import BUILTIN_QA_AGENT_ID
 from ..agent_context import get_agent_for_request
+from ..storage_deps import get_storage_config_path
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -182,10 +185,16 @@ async def write_memory_file(
     summary="Get agent language",
     description="Get the language setting for agent MD files (en/zh/ru)",
 )
-async def get_agent_language(request: Request) -> dict:
+async def get_agent_language(
+    request: Request,
+    config_path: Path = Depends(get_storage_config_path),
+) -> dict:
     """Get agent language setting for current agent."""
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
     return {
         "language": agent_config.language,
         "agent_id": workspace.agent_id,
@@ -206,6 +215,7 @@ async def put_agent_language(
         ...,
         description='Language setting, e.g. {"language": "zh"}',
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """
     Update agent language and optionally re-copy MD files to agent workspace.
@@ -226,12 +236,12 @@ async def put_agent_language(
     agent_id = workspace.agent_id
 
     # Load agent config
-    agent_config = load_agent_config(agent_id)
+    agent_config = load_agent_config(agent_id, config_path=config_path)
     old_language = agent_config.language
 
     # Update agent's language
     agent_config.language = language
-    save_agent_config(agent_id, agent_config)
+    save_agent_config(agent_id, agent_config, config_path=config_path)
 
     copied_files: list[str] = []
     if old_language != language:
@@ -267,9 +277,11 @@ async def put_agent_language(
         'Values: "auto", "native".'
     ),
 )
-async def get_audio_mode() -> dict:
+async def get_audio_mode(
+    config_path: Path = Depends(get_storage_config_path),
+) -> dict:
     """Get audio mode setting."""
-    config = load_config()
+    config = load_config(config_path)
     return {"audio_mode": config.agents.audio_mode}
 
 
@@ -287,6 +299,7 @@ async def put_audio_mode(
         ...,
         description='Audio mode, e.g. {"audio_mode": "auto"}',
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Update audio mode setting."""
     raw = body.get("audio_mode")
@@ -300,9 +313,9 @@ async def put_audio_mode(
                 f"Must be one of: {', '.join(sorted(valid))}"
             ),
         )
-    config = load_config()
+    config = load_config(config_path)
     config.agents.audio_mode = audio_mode
-    save_config(config)
+    save_config(config, config_path)
     return {"audio_mode": audio_mode}
 
 
@@ -314,9 +327,11 @@ async def put_audio_mode(
         'Values: "disabled", "whisper_api", "local_whisper".'
     ),
 )
-async def get_transcription_provider_type() -> dict:
+async def get_transcription_provider_type(
+    config_path: Path = Depends(get_storage_config_path),
+) -> dict:
     """Get transcription provider type setting."""
-    config = load_config()
+    config = load_config(config_path)
     return {
         "transcription_provider_type": (
             config.agents.transcription_provider_type
@@ -342,6 +357,7 @@ async def put_transcription_provider_type(
             '{"transcription_provider_type": "whisper_api"}'
         ),
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Set the transcription provider type."""
     raw = body.get("transcription_provider_type")
@@ -355,9 +371,9 @@ async def put_transcription_provider_type(
                 f"Must be one of: {', '.join(sorted(valid))}"
             ),
         )
-    config = load_config()
+    config = load_config(config_path)
     config.agents.transcription_provider_type = provider_type
-    save_config(config)
+    save_config(config, config_path)
     return {"transcription_provider_type": provider_type}
 
 
@@ -415,12 +431,13 @@ async def put_transcription_provider(
             'or {"provider_id": ""} to unset'
         ),
     ),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Set the transcription provider."""
     provider_id = (body.get("provider_id") or "").strip()
-    config = load_config()
+    config = load_config(config_path)
     config.agents.transcription_provider_id = provider_id
-    save_config(config)
+    save_config(config, config_path)
     return {"provider_id": provider_id}
 
 
@@ -432,10 +449,14 @@ async def put_transcription_provider(
 )
 async def get_agents_running_config(
     request: Request,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> AgentsRunningConfig:
     """Get agent running configuration."""
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
     return agent_config.running or AgentsRunningConfig()
 
 
@@ -446,17 +467,25 @@ async def get_agents_running_config(
     description="Update running configuration for active agent",
 )
 async def put_agents_running_config(
+    request: Request,
     running_config: AgentsRunningConfig = Body(
         ...,
         description="Updated agent running configuration",
     ),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> AgentsRunningConfig:
     """Update agent running configuration."""
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
     agent_config.running = running_config
-    save_agent_config(workspace.agent_id, agent_config)
+    save_agent_config(
+        workspace.agent_id,
+        agent_config,
+        config_path=config_path,
+    )
 
     # Hot reload config (async, non-blocking)
     schedule_agent_reload(request, workspace.agent_id)
@@ -472,10 +501,14 @@ async def put_agents_running_config(
 )
 async def get_system_prompt_files(
     request: Request,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> list[str]:
     """Get list of enabled system prompt files."""
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
     return agent_config.system_prompt_files or []
 
 
@@ -486,17 +519,25 @@ async def get_system_prompt_files(
     description="Update system prompt files for active agent",
 )
 async def put_system_prompt_files(
+    request: Request,
     files: list[str] = Body(
         ...,
         description="Markdown filenames to load into system prompt",
     ),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> list[str]:
     """Update list of enabled system prompt files."""
     workspace = await get_agent_for_request(request)
-    agent_config = load_agent_config(workspace.agent_id)
+    agent_config = load_agent_config(
+        workspace.agent_id,
+        config_path=config_path,
+    )
     agent_config.system_prompt_files = files
-    save_agent_config(workspace.agent_id, agent_config)
+    save_agent_config(
+        workspace.agent_id,
+        agent_config,
+        config_path=config_path,
+    )
 
     # Hot reload config (async, non-blocking)
     schedule_agent_reload(request, workspace.agent_id)

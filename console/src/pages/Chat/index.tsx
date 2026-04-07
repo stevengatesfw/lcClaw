@@ -4,6 +4,7 @@ import {
   type IAgentScopeRuntimeWebUIRef,
 } from "@agentscope-ai/chat";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePinnedChatPathname } from "../../hooks/usePinnedChatPathname";
 import { Button, Modal, Result, Tooltip } from "antd";
 import { useAppMessage } from "../../hooks/useAppMessage";
 import { ExclamationCircleOutlined, SettingOutlined } from "@ant-design/icons";
@@ -143,7 +144,6 @@ function useIMEComposition(isChatActive: () => boolean) {
 
 /** Fetch and track multimodal capabilities for the active model. */
 function useMultimodalCapabilities(
-  refreshKey: number,
   locationPathname: string,
   isChatActive: () => boolean,
   selectedAgent: string,
@@ -203,10 +203,9 @@ function useMultimodalCapabilities(
     }
   }, [selectedAgent]);
 
-  // Fetch caps on mount and whenever refreshKey changes
   useEffect(() => {
     fetchMultimodalCaps();
-  }, [fetchMultimodalCaps, refreshKey]);
+  }, [fetchMultimodalCaps]);
 
   // Also poll caps when navigating back to chat
   useEffect(() => {
@@ -307,18 +306,18 @@ export default function ChatPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+  const pinnedChatPath = usePinnedChatPathname();
   const { isDark } = useTheme();
   const chatId = useMemo(() => {
-    const match = location.pathname.match(/^\/chat\/(.+)$/);
+    const match = pinnedChatPath.match(/^\/chat\/(.+)$/);
     return match?.[1];
-  }, [location.pathname]);
+  }, [pinnedChatPath]);
   const [showModelPrompt, setShowModelPrompt] = useState(false);
   const [lcagentConfigError, setLcagentConfigError] = useState("");
   const embedChatOnly =
     typeof window !== "undefined" &&
     new URLSearchParams(location.search).get("embed") === "chat";
   const { selectedAgent } = useAgentStore();
-  const [refreshKey, setRefreshKey] = useState(0);
   const runtimeLoadingBridgeRef = useRef<RuntimeLoadingBridgeApi | null>(null);
   const { message } = useAppMessage();
 
@@ -331,7 +330,6 @@ export default function ChatPage() {
   // Use custom hooks for better separation of concerns
   const isComposingRef = useIMEComposition(isChatActive);
   const multimodalCaps = useMultimodalCapabilities(
-    refreshKey,
     location.pathname,
     isChatActive,
     selectedAgent,
@@ -355,10 +353,9 @@ export default function ChatPage() {
   // Register session API event callbacks for URL synchronization
 
   useEffect(() => {
-    sessionApi.onSessionIdResolved = (realId) => {
+    sessionApi.onSessionIdResolved = (_tempId, realId) => {
       if (!isChatActiveRef.current) return;
-      // Update URL when realId is resolved, regardless of current chatId
-      // (chatId may be undefined if URL was cleared in onSessionCreated)
+      // sessionApi 传入 (临时时间戳 id, 后端 chat UUID)；第二段才是可分享、可拉历史的 id
       lastSessionIdRef.current = realId;
       navigateRef.current(`/chat/${realId}`, { replace: true });
     };
@@ -431,20 +428,6 @@ export default function ChatPage() {
 
   // Setup multimodal capabilities tracking via custom hook
 
-  // Refresh chat when selectedAgent changes
-  const prevSelectedAgentRef = useRef(selectedAgent);
-  useEffect(() => {
-    // Only refresh if selectedAgent actually changed (not initial mount)
-    if (
-      prevSelectedAgentRef.current !== selectedAgent &&
-      prevSelectedAgentRef.current !== undefined
-    ) {
-      // Force re-render by updating refresh key
-      setRefreshKey((prev) => prev + 1);
-    }
-    prevSelectedAgentRef.current = selectedAgent;
-  }, [selectedAgent]);
-
   const copyResponse = useCallback(
     async (response: CopyableResponse) => {
       try {
@@ -516,8 +499,9 @@ export default function ChatPage() {
         stream: true,
         meta: {
           ...bizMeta,
-          lcagent_enable_agent: false,
-          lcagent_enable_skills: false,
+          // 控制台独立使用 lcClaw：不走 LCAgent 首页的「智能体/应用」能力；技能由本仓库 Skills 页管理，应对话生效。
+          lcagent_enable_agent: true,
+          lcagent_enable_skills: true,
         },
       };
 
@@ -762,7 +746,6 @@ export default function ChatPage() {
       >
         <AgentScopeRuntimeWebUI
           ref={chatRef}
-          key={refreshKey}
           options={options}
         />
       </div>

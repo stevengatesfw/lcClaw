@@ -3,8 +3,9 @@
 
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from ..auth import get_current_user_id_required
 from ...token_usage import get_token_usage_manager, TokenUsageSummary
 
 router = APIRouter(prefix="/token-usage", tags=["token-usage"])
@@ -46,6 +47,7 @@ async def get_token_usage(
         None,
         description="Filter by provider ID",
     ),
+    auth_uid: str = Depends(get_current_user_id_required),
 ) -> TokenUsageSummary:
     """Return token usage summary for the given date range."""
     end_d = _parse_date(end_date) or date.today()
@@ -53,7 +55,9 @@ async def get_token_usage(
     if start_d > end_d:
         start_d, end_d = end_d, start_d
 
-    return await get_token_usage_manager().get_summary(
+    return await get_token_usage_manager(
+        user_id=auth_uid if auth_uid else None,
+    ).get_summary(
         start_date=start_d,
         end_date=end_d,
         model_name=model,

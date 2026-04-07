@@ -48,6 +48,10 @@ export default function MainLayout() {
     new URLSearchParams(location.search).get("embed") === "chat";
   const currentPath = location.pathname;
   const selectedKey = pathToKey[currentPath] || "chat";
+  const onChatRoute =
+    currentPath === "/" ||
+    currentPath === "/chat" ||
+    currentPath.startsWith("/chat/");
 
   if (embedChatOnly) {
     return (
@@ -72,30 +76,61 @@ export default function MainLayout() {
         <Sidebar selectedKey={selectedKey} />
         <Content className="page-container">
           <ConsoleCronBubble />
-          <div className="page-content">
-            <Routes>
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat/*" element={<Chat />} />
-              <Route path="/channels" element={<ChannelsPage />} />
-              <Route path="/sessions" element={<SessionsPage />} />
-              <Route path="/cron-jobs" element={<CronJobsPage />} />
-              <Route path="/heartbeat" element={<HeartbeatPage />} />
-              <Route path="/skills" element={<SkillsPage />} />
-              <Route path="/skill-pool" element={<SkillPoolPage />} />
-              <Route path="/tools" element={<ToolsPage />} />
-              <Route path="/mcp" element={<MCPPage />} />
-              <Route path="/workspace" element={<WorkspacePage />} />
-              <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/models" element={<Navigate to="/chat" replace />} />
-              <Route path="/environments" element={<EnvironmentsPage />} />
-              <Route path="/agent-config" element={<AgentConfigPage />} />
-              <Route path="/security" element={<SecurityPage />} />
-              <Route path="/token-usage" element={<TokenUsagePage />} />
-              <Route
-                path="/voice-transcription"
-                element={<VoiceTranscriptionPage />}
-              />
-            </Routes>
+          <div
+            className="page-content"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+            }}
+          >
+            {/* 持久挂载聊天：切到频道/技能等页时不再卸载，避免消息与上下文被清空 */}
+            <div
+              style={{
+                display: onChatRoute ? "flex" : "none",
+                flexDirection: "column",
+                flex: 1,
+                minHeight: 0,
+                minWidth: 0,
+              }}
+              aria-hidden={!onChatRoute}
+            >
+              <Chat />
+            </div>
+            <div
+              style={{
+                display: onChatRoute ? "none" : "block",
+                flex: 1,
+                minHeight: 0,
+                minWidth: 0,
+                overflow: "auto",
+              }}
+            >
+              <Routes>
+                <Route path="/" element={<Navigate to="/chat" replace />} />
+                <Route path="/channels" element={<ChannelsPage />} />
+                <Route path="/sessions" element={<SessionsPage />} />
+                <Route path="/cron-jobs" element={<CronJobsPage />} />
+                <Route path="/heartbeat" element={<HeartbeatPage />} />
+                <Route path="/skills" element={<SkillsPage />} />
+                <Route path="/skill-pool" element={<SkillPoolPage />} />
+                <Route path="/tools" element={<ToolsPage />} />
+                <Route path="/mcp" element={<MCPPage />} />
+                <Route path="/workspace" element={<WorkspacePage />} />
+                <Route path="/agents" element={<AgentsPage />} />
+                <Route path="/models" element={<Navigate to="/chat" replace />} />
+                <Route path="/environments" element={<EnvironmentsPage />} />
+                <Route path="/agent-config" element={<AgentConfigPage />} />
+                <Route path="/security" element={<SecurityPage />} />
+                <Route path="/token-usage" element={<TokenUsagePage />} />
+                <Route
+                  path="/voice-transcription"
+                  element={<VoiceTranscriptionPage />}
+                />
+              </Routes>
+            </div>
           </div>
         </Content>
       </Layout>

@@ -1106,11 +1106,15 @@ ChannelConfigUnion = Union[
 # Agent configuration utility functions
 
 
-def load_agent_config(agent_id: str) -> AgentProfileConfig:
+def load_agent_config(
+    agent_id: str,
+    config_path: Optional[Path] = None,
+) -> AgentProfileConfig:
     """Load agent's complete configuration from workspace/agent.json.
 
     Args:
         agent_id: Agent ID to load
+        config_path: Root ``config.json`` (default: global ``get_config_path()``).
 
     Returns:
         AgentProfileConfig: Complete agent configuration
@@ -1120,7 +1124,7 @@ def load_agent_config(agent_id: str) -> AgentProfileConfig:
     """
     from .utils import load_config
 
-    config = load_config()
+    config = load_config(config_path)
 
     if agent_id not in config.agents.profiles:
         raise ValueError(f"Agent '{agent_id}' not found in config")
@@ -1174,7 +1178,7 @@ def load_agent_config(agent_id: str) -> AgentProfileConfig:
             ),
         )
         # Save for future use
-        save_agent_config(agent_id, fallback_config)
+        save_agent_config(agent_id, fallback_config, config_path=config_path)
         return fallback_config
 
     with open(agent_config_path, "r", encoding="utf-8") as f:
@@ -1196,19 +1200,21 @@ def load_agent_config(agent_id: str) -> AgentProfileConfig:
 def save_agent_config(
     agent_id: str,
     agent_config: AgentProfileConfig,
+    config_path: Optional[Path] = None,
 ) -> None:
     """Save agent configuration to workspace/agent.json.
 
     Args:
         agent_id: Agent ID
         agent_config: Complete agent configuration to save
+        config_path: Root ``config.json`` (default: global).
 
     Raises:
         ValueError: If agent ID not found in root config
     """
     from .utils import load_config
 
-    config = load_config()
+    config = load_config(config_path)
 
     if agent_id not in config.agents.profiles:
         raise ValueError(f"Agent '{agent_id}' not found in config")

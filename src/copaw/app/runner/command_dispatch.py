@@ -19,6 +19,7 @@ from .daemon_commands import (
 )
 from ...agents.command_handler import CommandHandler
 from ...config.config import load_agent_config
+from ...context import get_effective_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +122,18 @@ async def run_command_path(  # pylint: disable=too-many-statements
             yield hint, True
 
         agent_id = runner.agent_id
+        eff_cfg = get_effective_config_path()
+
         daemon_ctx = DaemonContext(
-            load_config_fn=lambda: load_agent_config(agent_id),
+            load_config_fn=lambda: load_agent_config(
+                agent_id,
+                config_path=get_effective_config_path(),
+            ),
             memory_manager=runner.memory_manager,
             manager=manager,
             agent_id=agent_id,
             session_id=session_id,
+            config_path=eff_cfg,
         )
         msg = await handler.handle_daemon_command(query, daemon_ctx)
         yield msg, True

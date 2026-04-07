@@ -7,7 +7,10 @@ from contextvars import ContextVar
 from typing import Optional, TYPE_CHECKING
 from fastapi import Request
 from .multi_agent_manager import MultiAgentManager
+from .migration import ensure_tenant_default_agent
+from .storage_deps import get_request_config_path
 from ..config.utils import load_config
+from ..context import get_effective_config_path
 
 if TYPE_CHECKING:
     from .workspace import Workspace
@@ -54,16 +57,19 @@ async def get_agent_for_request(
     if not target_agent_id:
         target_agent_id = request.headers.get("X-Agent-Id")
 
+    config_path = get_request_config_path(request)
+    ensure_tenant_default_agent(config_path)
+
     # Load config once for fallback and validation
     config = None
     if not target_agent_id:
         # Fallback to active agent from config
-        config = load_config()
+        config = load_config(config_path)
         target_agent_id = config.agents.active_agent or "default"
 
     # Check if agent exists and is enabled
     if config is None:
-        config = load_config()
+        config = load_config(config_path)
     if target_agent_id not in config.agents.profiles:
         raise HTTPException(
             status_code=404,
@@ -87,7 +93,10 @@ async def get_agent_for_request(
     manager: MultiAgentManager = request.app.state.multi_agent_manager
 
     try:
-        workspace = await manager.get_agent(target_agent_id)
+        workspace = await manager.get_agent(
+            target_agent_id,
+            config_path=config_path,
+        )
         if not workspace:
             raise HTTPException(
                 status_code=404,
@@ -113,7 +122,7 @@ def get_active_agent_id() -> str:
         Active agent ID, defaults to "default"
     """
     try:
-        config = load_config()
+        config = load_config(get_effective_config_path())
         return config.agents.active_agent or "default"
     except Exception:
         return "default"

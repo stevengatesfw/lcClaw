@@ -6,15 +6,16 @@ import { getToken } from "./tokenStore";
 const AUTH_TOKEN_KEY = "copaw_auth_token";
 
 /**
- * Console is served under LCAgent's `/copaw/` (iframe or same-origin tab).
- * Then API must be `/copaw/api/...` so ingress `location /copaw/api/` reaches Copaw;
- * root `/api/...` is often routed to LCAgent Flask and breaks agents/tools/heartbeat, etc.
+ * Console 挂在 LCAgent 的 `/copaw/` 或 `/console/` 下时，浏览器里的 `/api/*` 常打到 Flask，
+ * 导致 chats、config/channels、skills 等 CoPaw 接口失败（无记录、无法接入频道）。
+ * 统一走 `/copaw/api/*`，与 nginx `location /copaw/api/` 一致。
  */
-function isLcagentCopawMount(): boolean {
+function isLcagentHostedCopawConsole(): boolean {
   if (typeof window === "undefined") {
     return false;
   }
-  return /^\/copaw(?:\/|$)/.test(window.location.pathname);
+  const p = window.location.pathname;
+  return /^\/copaw(?:\/|$)/.test(p) || /^\/console(?:\/|$)/.test(p);
 }
 
 /**
@@ -25,7 +26,7 @@ function isLcagentCopawMount(): boolean {
 export function getApiUrl(path: string): string {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   const apiSuffix = `/api${normalizedPath}`;
-  if (isLcagentCopawMount()) {
+  if (isLcagentHostedCopawConsole()) {
     return `/copaw${apiSuffix}`;
   }
   const base =

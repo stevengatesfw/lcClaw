@@ -156,7 +156,11 @@ async def put_channels(
 
         agent = await get_agent_for_request(request)
         agent.config.channels = channels_config
-        save_agent_config(agent.agent_id, agent.config)
+        save_agent_config(
+            agent.agent_id,
+            agent.config,
+            config_path=config_path,
+        )
         schedule_agent_reload(request, agent.agent_id)
 
     return channels_config
@@ -370,7 +374,11 @@ async def put_channel(
     if agent.config.channels is None:
         agent.config.channels = ChannelConfig()
     setattr(agent.config.channels, channel_name, channel_config)
-    save_agent_config(agent.agent_id, agent.config)
+    save_agent_config(
+        agent.agent_id,
+        agent.config,
+        config_path=config_path,
+    )
     schedule_agent_reload(request, agent.agent_id)
     return channel_config
 
@@ -433,7 +441,11 @@ async def put_heartbeat(
 
         agent = await get_agent_for_request(request)
         agent.config.heartbeat = hb
-        save_agent_config(agent.agent_id, agent.config)
+        save_agent_config(
+            agent.agent_id,
+            agent.config,
+            config_path=config_path,
+        )
 
         import asyncio
         import logging
@@ -458,8 +470,10 @@ async def put_heartbeat(
     response_model=AgentsLLMRoutingConfig,
     summary="Get agent LLM routing settings",
 )
-async def get_agents_llm_routing() -> AgentsLLMRoutingConfig:
-    config = load_config()
+async def get_agents_llm_routing(
+    config_path: Path = Depends(get_storage_config_path),
+) -> AgentsLLMRoutingConfig:
+    config = load_config(config_path)
     return config.agents.llm_routing
 
 
@@ -470,10 +484,11 @@ async def get_agents_llm_routing() -> AgentsLLMRoutingConfig:
 )
 async def put_agents_llm_routing(
     body: AgentsLLMRoutingConfig = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> AgentsLLMRoutingConfig:
-    config = load_config()
+    config = load_config(config_path)
     config.agents.llm_routing = body
-    save_config(config)
+    save_config(config, config_path)
     return body
 
 
@@ -485,8 +500,10 @@ async def put_agents_llm_routing(
     summary="Get user timezone",
     description="Return the configured user IANA timezone",
 )
-async def get_user_timezone() -> dict:
-    config = load_config()
+async def get_user_timezone(
+    config_path: Path = Depends(get_storage_config_path),
+) -> dict:
+    config = load_config(config_path)
     return {"timezone": config.user_timezone}
 
 
@@ -497,13 +514,14 @@ async def get_user_timezone() -> dict:
 )
 async def put_user_timezone(
     body: dict = Body(..., description="Body with 'timezone' key"),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     tz = body.get("timezone", "").strip()
     if not tz:
         raise HTTPException(status_code=400, detail="timezone is required")
-    config = load_config()
+    config = load_config(config_path)
     config.user_timezone = tz
-    save_config(config)
+    save_config(config, config_path)
     return {"timezone": tz}
 
 

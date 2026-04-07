@@ -17,6 +17,7 @@ from typing import Optional
 from agentscope.message import Msg
 
 from ...config import load_config
+from ...context import get_effective_config_path
 from .file_handling import download_file_from_base64, download_file_from_url
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ async def _process_audio_block(
     """
     from .audio_transcription import transcribe_audio
 
-    audio_mode = load_config().agents.audio_mode
+    audio_mode = load_config(get_effective_config_path()).agents.audio_mode
 
     if audio_mode == "native":
         converted = await asyncio.to_thread(
@@ -419,7 +420,7 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
                 downloaded_files.append((i, local_path))
 
         if downloaded_files:
-            lang = load_config().agents.language
+            lang = load_config(get_effective_config_path()).agents.language
             for i, local_path in reversed(downloaded_files):
                 text = (
                     f"用户上传文件，已经下载到 {local_path}"

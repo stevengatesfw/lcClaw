@@ -20,6 +20,7 @@ from copaw.agents.tools import read_file, write_file, edit_file
 from copaw.agents.utils import get_copaw_token_counter
 from copaw.config import load_config
 from copaw.config.config import load_agent_config
+from copaw.context import get_effective_config_path
 from copaw.config.context import (
     set_current_workspace_dir,
     set_current_recent_max_bytes,
@@ -107,7 +108,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
 
         fts_enabled = EnvVarLoader.get_bool("FTS_ENABLED", True)
 
-        agent_config = load_agent_config(self.agent_id)
+        agent_config = load_agent_config(
+            self.agent_id,
+            config_path=get_effective_config_path(),
+        )
         rebuild_on_start = (
             agent_config.running.memory_summary.rebuild_memory_index_on_start
         )
@@ -184,7 +188,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         """Return embedding config with priority:
         config > env var > default."""
         self._warn_if_version_mismatch()
-        cfg = load_agent_config(self.agent_id).running.embedding_config
+        cfg = load_agent_config(
+            self.agent_id,
+            config_path=get_effective_config_path(),
+        ).running.embedding_config
         return {
             "backend": cfg.backend,
             "api_key": cfg.api_key
@@ -264,7 +271,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         """
         self._prepare_model_formatter()
 
-        agent_config = load_agent_config(self.agent_id)
+        agent_config = load_agent_config(
+            self.agent_id,
+            config_path=get_effective_config_path(),
+        )
         cc = agent_config.running.context_compact
 
         result = await self._reme.compact_memory(
@@ -317,7 +327,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         """Generate a comprehensive summary of the given messages."""
         self._prepare_model_formatter()
 
-        agent_config = load_agent_config(self.agent_id)
+        agent_config = load_agent_config(
+            self.agent_id,
+            config_path=get_effective_config_path(),
+        )
         cc = agent_config.running.context_compact
 
         set_current_workspace_dir(Path(self.working_dir))
@@ -335,7 +348,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
             language=agent_config.language,
             max_input_length=agent_config.running.max_input_length,
             compact_ratio=cc.memory_compact_ratio,
-            timezone=load_config().user_timezone or None,
+            timezone=load_config(
+                get_effective_config_path(),
+            ).user_timezone
+            or None,
             add_thinking_block=cc.compact_with_thinking_block,
         )
 
@@ -367,7 +383,10 @@ See: https://docs.trychroma.com/docs/overview/troubleshooting#sqlite
         self._warn_if_version_mismatch()
         if self._reme is None:
             return None
-        agent_config = load_agent_config(self.agent_id)
+        agent_config = load_agent_config(
+            self.agent_id,
+            config_path=get_effective_config_path(),
+        )
         return self._reme.get_in_memory_memory(
             as_token_counter=get_copaw_token_counter(agent_config),
         )

@@ -7,7 +7,9 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from fastapi import APIRouter, Body, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi import Path as PathParam
 from pydantic import BaseModel, field_validator
 
@@ -23,9 +25,9 @@ from ...config.config import (
 from ...config.utils import load_config, save_config
 from ...agents.memory.agent_md_manager import AgentMdManager
 from ...agents.utils import copy_builtin_qa_md_files
+from ..migration import ensure_tenant_default_agent
 from ..multi_agent_manager import MultiAgentManager
-from ...constant import WORKING_DIR
-
+from ..storage_deps import get_storage_config_path
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -137,15 +139,18 @@ def _read_profile_description(workspace_dir: str) -> str:
     summary="List all agents",
     description="Get list of all configured agents",
 )
-async def list_agents() -> AgentListResponse:
+async def list_agents(
+    config_path: Path = Depends(get_storage_config_path),
+) -> AgentListResponse:
     """List all configured agents."""
-    config = load_config()
+    ensure_tenant_default_agent(config_path)
+    config = load_config(config_path)
 
     agents = []
     for agent_id, agent_ref in config.agents.profiles.items():
         # Load agent config to get name and description
         try:
-            agent_config = load_agent_config(agent_id)
+            agent_config = load_agent_config(agent_id, config_path=config_path)
             description = agent_config.description or ""
 
             # Always read PROFILE.md and append/merge
@@ -190,10 +195,14 @@ async def list_agents() -> AgentListResponse:
     summary="Get agent details",
     description="Get complete configuration for a specific agent",
 )
-async def get_agent(agentId: str = PathParam(...)) -> AgentProfileConfig:
+async def get_agent(
+    agentId: str = PathParam(...),
+    config_path: Path = Depends(get_storage_config_path),
+) -> AgentProfileConfig:
     """Get agent configuration."""
+    ensure_tenant_default_agent(config_path)
     try:
-        agent_config = load_agent_config(agentId)
+        agent_config = load_agent_config(agentId, config_path=config_path)
         return agent_config
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -210,9 +219,11 @@ async def get_agent(agentId: str = PathParam(...)) -> AgentProfileConfig:
 )
 async def create_agent(
     request: CreateAgentRequest = Body(...),
+    config_path: Path = Depends(get_storage_config_path),
 ) -> AgentProfileRef:
     """Create a new agent with auto-generated ID."""
-    config = load_config()
+    ensure_tenant_default_agent(config_path)
+    config = load_config(config_path)
 
     # Always generate a unique short UUID (6 characters)
     max_attempts = 10
@@ -229,9 +240,9 @@ async def create_agent(
             detail="Failed to generate unique agent ID after 10 attempts",
         )
 
-    # Create workspace directory
+    tenant_ws_root = config_path.parent / "workspaces" / new_id
     workspace_dir = Path(
-        request.workspace_dir or f"{WORKING_DIR}/workspaces/{new_id}",
+        request.workspace_dir or str(tenant_ws_root),
     ).expanduser()
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
@@ -262,6 +273,7 @@ async def create_agent(
         skill_names=(
             request.skill_names if request.skill_names is not None else []
         ),
+        root_config_path=config_path,
     )
 
     # Save agent configuration to workspace/agent.json
@@ -273,10 +285,10 @@ async def create_agent(
 
     # Add to root config
     config.agents.profiles[new_id] = agent_ref
-    save_config(config)
+    save_config(config, config_path)
 
     # Save agent config to workspace
-    save_agent_config(new_id, agent_config)
+    save_agent_config(new_id, agent_config, config_path=config_path)
 
     logger.info(f"Created new agent: {new_id} (name={request.name})")
 
@@ -290,12 +302,13 @@ async def create_agent(
     description="Update agent configuration and trigger reload",
 )
 async def update_agent(
+    request: Request,
     agentId: str = PathParam(...),
     agent_config: AgentProfileConfig = Body(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> AgentProfileConfig:
     """Update agent configuration."""
-    config = load_config()
+    config = load_config(config_path)
 
     if agentId not in config.agents.profiles:
         raise HTTPException(
@@ -304,7 +317,7 @@ async def update_agent(
         )
 
     # Load existing complete configuration
-    existing_config = load_agent_config(agentId)
+    existing_config = load_agent_config(agentId, config_path=config_path)
 
     # Merge updates: only update fields that are explicitly set
     update_data = agent_config.model_dump(exclude_unset=True)
@@ -316,7 +329,7 @@ async def update_agent(
     existing_config.id = agentId
 
     # Save merged configuration
-    save_agent_config(agentId, existing_config)
+    save_agent_config(agentId, existing_config, config_path=config_path)
 
     # Trigger hot reload if agent is running (async, non-blocking)
     schedule_agent_reload(request, agentId)
@@ -330,11 +343,12 @@ async def update_agent(
     description="Delete agent and workspace (cannot delete default agent)",
 )
 async def delete_agent(
+    request: Request,
     agentId: str = PathParam(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Delete an agent."""
-    config = load_config()
+    config = load_config(config_path)
 
     if agentId not in config.agents.profiles:
         raise HTTPException(
@@ -350,11 +364,11 @@ async def delete_agent(
 
     # Stop agent instance if running
     manager = _get_multi_agent_manager(request)
-    await manager.stop_agent(agentId)
+    await manager.stop_agent(agentId, config_path=config_path)
 
     # Remove from config
     del config.agents.profiles[agentId]
-    save_config(config)
+    save_config(config, config_path)
 
     # Note: We don't delete the workspace directory for safety
     # Users can manually delete it if needed
@@ -368,9 +382,10 @@ async def delete_agent(
     description="Enable or disable an agent (cannot disable default agent)",
 )
 async def toggle_agent_enabled(
+    request: Request,
     agentId: str = PathParam(...),
     enabled: bool = Body(..., embed=True),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Toggle agent enabled state.
 
@@ -382,7 +397,7 @@ async def toggle_agent_enabled(
     1. Update enabled field in config.json
     2. Agent will be started immediately
     """
-    config = load_config()
+    config = load_config(config_path)
 
     if agentId not in config.agents.profiles:
         raise HTTPException(
@@ -401,16 +416,16 @@ async def toggle_agent_enabled(
 
     # If disabling, stop the agent instance
     if not enabled and getattr(agent_ref, "enabled", True):
-        await manager.stop_agent(agentId)
+        await manager.stop_agent(agentId, config_path=config_path)
 
     # Update enabled status
     agent_ref.enabled = enabled
-    save_config(config)
+    save_config(config, config_path)
 
     # If enabling, start the agent instance immediately
     if enabled:
         try:
-            await manager.get_agent(agentId)
+            await manager.get_agent(agentId, config_path=config_path)
             logger.info(f"Agent {agentId} started successfully")
         except Exception as e:
             logger.error(f"Failed to start agent {agentId}: {e}")
@@ -433,14 +448,15 @@ async def toggle_agent_enabled(
     description="List all markdown files in agent's workspace",
 )
 async def list_agent_files(
+    request: Request,
     agentId: str = PathParam(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> list[MdFileInfo]:
     """List agent workspace files."""
     manager = _get_multi_agent_manager(request)
 
     try:
-        workspace = await manager.get_agent(agentId)
+        workspace = await manager.get_agent(agentId, config_path=config_path)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -463,15 +479,16 @@ async def list_agent_files(
     description="Read a markdown file from agent's workspace",
 )
 async def read_agent_file(
+    request: Request,
     agentId: str = PathParam(...),
     filename: str = PathParam(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> MdFileContent:
     """Read agent workspace file."""
     manager = _get_multi_agent_manager(request)
 
     try:
-        workspace = await manager.get_agent(agentId)
+        workspace = await manager.get_agent(agentId, config_path=config_path)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -496,16 +513,17 @@ async def read_agent_file(
     description="Create or update a markdown file in agent's workspace",
 )
 async def write_agent_file(
+    request: Request,
     agentId: str = PathParam(...),
     filename: str = PathParam(...),
     file_content: MdFileContent = Body(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> dict:
     """Write agent workspace file."""
     manager = _get_multi_agent_manager(request)
 
     try:
-        workspace = await manager.get_agent(agentId)
+        workspace = await manager.get_agent(agentId, config_path=config_path)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -525,14 +543,15 @@ async def write_agent_file(
     description="List all memory files for an agent",
 )
 async def list_agent_memory(
+    request: Request,
     agentId: str = PathParam(...),
-    request: Request = None,
+    config_path: Path = Depends(get_storage_config_path),
 ) -> list[MdFileInfo]:
     """List agent memory files."""
     manager = _get_multi_agent_manager(request)
 
     try:
-        workspace = await manager.get_agent(agentId)
+        workspace = await manager.get_agent(agentId, config_path=config_path)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -584,6 +603,7 @@ def _initialize_agent_workspace(  # pylint: disable=too-many-branches
     *,
     skill_names: list[str] | None = None,
     builtin_qa_md_seed: bool = False,
+    root_config_path: Optional[Path] = None,
 ) -> None:
     """Initialize agent workspace (similar to copaw init --defaults).
 
@@ -598,7 +618,7 @@ def _initialize_agent_workspace(  # pylint: disable=too-many-branches
             HEARTBEAT from the normal language pack, and **omit** BOOTSTRAP.md
             so bootstrap mode never triggers.
     """
-    from ...config import load_config as load_global_config
+    from ...config.utils import load_config as load_root_config
 
     workspace_dir = Path(workspace_dir).expanduser()
 
@@ -607,8 +627,8 @@ def _initialize_agent_workspace(  # pylint: disable=too-many-branches
     (workspace_dir / "memory").mkdir(exist_ok=True)
     (workspace_dir / "skills").mkdir(exist_ok=True)
 
-    # Get language from global config
-    config = load_global_config()
+    # Get language from root config (tenant or global)
+    config = load_root_config(root_config_path)
     language = config.agents.language or "zh"
 
     package_agents_root = Path(__file__).parent.parent.parent / "agents"

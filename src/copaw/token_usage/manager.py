@@ -7,10 +7,16 @@ import logging
 import threading
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
 
 import aiofiles
 from pydantic import BaseModel, Field
 
+from ..config.utils import (
+    DEFAULT_USER_ID,
+    copaw_storage_isolation_enabled,
+    get_user_working_dir,
+)
 from ..constant import WORKING_DIR, TOKEN_USAGE_FILE
 
 logger = logging.getLogger(__name__)
@@ -60,14 +66,10 @@ class TokenUsageSummary(BaseModel):
 
 
 class TokenUsageManager:
-    """Manager for token usage records.
-    Use get_instance() to obtain the singleton."""
+    """Manager for token usage records (one instance per storage file)."""
 
-    _instance: "TokenUsageManager | None" = None
-    _lock = threading.Lock()
-
-    def __init__(self) -> None:
-        self._path: Path = (WORKING_DIR / TOKEN_USAGE_FILE).expanduser()
+    def __init__(self, storage_path: Path) -> None:
+        self._path: Path = storage_path.expanduser()
         self._file_lock = asyncio.Lock()
 
     async def _load_data(self) -> dict:
@@ -293,16 +295,33 @@ class TokenUsageManager:
             by_date=by_date,
         )
 
-    @classmethod
-    def get_instance(cls) -> "TokenUsageManager":
-        """Return the singleton TokenUsageManager instance."""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = cls()
-        return cls._instance
+_registry: dict[str, TokenUsageManager] = {}
+_registry_lock = threading.Lock()
 
 
-def get_token_usage_manager() -> TokenUsageManager:
-    """Return the singleton TokenUsageManager instance."""
-    return TokenUsageManager.get_instance()
+def get_token_usage_manager(
+    user_id: Optional[str] = None,
+) -> TokenUsageManager:
+    """Return manager for global or per-user ``token_usage.json``.
+
+    When storage isolation is on, uses *user_id* if given, else
+    ``get_context_user_id()``, else ``DEFAULT_USER_ID``.
+    """
+    from ..context import get_context_user_id
+
+    if copaw_storage_isolation_enabled():
+        uid = user_id if user_id is not None else get_context_user_id()
+        if not uid:
+            uid = DEFAULT_USER_ID
+        path = (get_user_working_dir(uid) / TOKEN_USAGE_FILE).expanduser()
+        key = str(path.resolve())
+    else:
+        path = (WORKING_DIR / TOKEN_USAGE_FILE).expanduser()
+        key = "__global__"
+
+    with _registry_lock:
+        inst = _registry.get(key)
+        if inst is None:
+            inst = TokenUsageManager(path)
+            _registry[key] = inst
+        return inst

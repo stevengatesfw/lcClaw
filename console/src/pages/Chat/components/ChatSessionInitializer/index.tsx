@@ -1,6 +1,24 @@
 import React, { useEffect, useMemo, useRef } from "react";
-import { useLocation } from "react-router-dom";
 import { useChatAnywhereSessionsState } from "@agentscope-ai/chat";
+import { usePinnedChatPathname } from "../../../../hooks/usePinnedChatPathname";
+
+/** sessionApi 在解析 realId 后会把 URL 写成后端 UUID；列表里 id 可能仍是本地时间戳，需按 realId/sessionId 对齐 */
+type SessionWithIds = {
+  id: string;
+  sessionId?: string;
+  realId?: string;
+};
+
+function sessionMatchesChatId(
+  s: { id: string },
+  chatId: string,
+): boolean {
+  if (s.id === chatId) return true;
+  const x = s as SessionWithIds;
+  if (x.realId && x.realId === chatId) return true;
+  if (x.sessionId && x.sessionId === chatId) return true;
+  return false;
+}
 
 /**
  * URL chatId → context currentSessionId (one direction of bidirectional sync).
@@ -10,11 +28,11 @@ import { useChatAnywhereSessionsState } from "@agentscope-ai/chat";
  * (context → URL via onSessionSelected), which would cause circular re-loads.
  */
 const ChatSessionInitializer: React.FC = () => {
-  const location = useLocation();
+  const pinnedChatPath = usePinnedChatPathname();
   const chatId = useMemo(() => {
-    const match = location.pathname.match(/^\/chat\/(.+)$/);
+    const match = pinnedChatPath.match(/^\/chat\/(.+)$/);
     return match?.[1];
-  }, [location.pathname]);
+  }, [pinnedChatPath]);
 
   const { sessions, currentSessionId, setCurrentSessionId } =
     useChatAnywhereSessionsState();
@@ -24,7 +42,7 @@ const ChatSessionInitializer: React.FC = () => {
 
   useEffect(() => {
     if (!chatId || !sessions.length) return;
-    const matching = sessions.find((s) => s.id === chatId);
+    const matching = sessions.find((s) => sessionMatchesChatId(s, chatId));
     if (matching && currentSessionIdRef.current !== matching.id) {
       setCurrentSessionId(matching.id);
     }

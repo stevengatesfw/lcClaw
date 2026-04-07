@@ -22,6 +22,7 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
 )
 
 from ...config import load_config
+from ...context import get_effective_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,9 @@ def build_env_context(
         Formatted environment context string
     """
     parts = []
-    user_tz = load_config().user_timezone or "UTC"
+    user_tz = (
+        load_config(get_effective_config_path()).user_timezone or "UTC"
+    )
     try:
         now = datetime.now(ZoneInfo(user_tz))
     except (ZoneInfoNotFoundError, KeyError):

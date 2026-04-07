@@ -79,7 +79,10 @@ def parse_heartbeat_every(every: str) -> int:
     return total
 
 
-def _in_active_hours(active_hours: Any) -> bool:
+def _in_active_hours(
+    active_hours: Any,
+    config_path: Optional[Path] = None,
+) -> bool:
     """Return True if the current time in user timezone is within
     [start, end].
     """
@@ -102,7 +105,7 @@ def _in_active_hours(active_hours: Any) -> bool:
         )
     except (ValueError, IndexError, AttributeError):
         return True
-    user_tz = load_config().user_timezone or "UTC"
+    user_tz = load_config(config_path).user_timezone or "UTC"
     try:
         now = datetime.now(ZoneInfo(user_tz)).time()
     except (ZoneInfoNotFoundError, KeyError):
@@ -145,7 +148,7 @@ async def run_heartbeat_once(
         config = None
         hb = get_heartbeat_config(agent_id)
 
-    if not _in_active_hours(hb.active_hours):
+    if not _in_active_hours(hb.active_hours, config_path=config_path):
         logger.debug("heartbeat skipped: outside active hours")
         return
 
@@ -186,12 +189,15 @@ async def run_heartbeat_once(
         last_dispatch = config.last_dispatch
     elif agent_id:
         try:
-            agent_config = load_agent_config(agent_id)
+            agent_config = load_agent_config(
+                agent_id,
+                config_path=config_path,
+            )
             last_dispatch = agent_config.last_dispatch
         except Exception:
             pass
     else:
-        root_config = load_config()
+        root_config = load_config(config_path)
         last_dispatch = root_config.last_dispatch
 
     target = (hb.target or "").strip().lower()

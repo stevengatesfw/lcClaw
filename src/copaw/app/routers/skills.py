@@ -19,7 +19,6 @@ from typing import Any, Optional
 
 from fastapi import (
     APIRouter,
-    Depends,
     File,
     HTTPException,
     Request,
@@ -28,8 +27,6 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ...config.utils import copaw_storage_isolation_enabled
-from ...context import get_context_user_id
 from ...agents.skills_hub import (
     SkillImportCancelled,
     install_skill_from_hub,
@@ -41,33 +38,28 @@ from ...agents.skills_manager import (
     SkillInfo,
     SkillPoolService,
     SkillService,
-    SkillServiceLCAgent,
     _default_pool_manifest,
     _default_workspace_manifest,
     _get_skill_mtime,
     _mutate_json,
     _read_skill_from_dir,
-    add_user_enabled_skill,
+    ensure_skills_initialized,
     get_pool_builtin_sync_status,
     get_pool_skill_manifest_path,
     get_skill_pool_dir,
-    get_user_enabled_skills,
     get_workspace_skill_manifest_path,
     get_workspace_skills_dir,
     import_builtin_skills,
-    list_available_skills,
     list_builtin_import_candidates,
     list_workspaces,
     read_skill_pool_manifest,
     read_skill_manifest,
     reconcile_pool_manifest,
     reconcile_workspace_manifest,
-    remove_user_enabled_skill,
     suggest_conflict_name,
     update_single_builtin,
 )
 from ...security.skill_scanner import SkillScanError
-from ..auth import get_current_user_id
 from ..utils import schedule_agent_reload
 
 logger = logging.getLogger(__name__)
@@ -486,8 +478,19 @@ def _mtime_to_iso(mtime: float) -> str:
     )
 
 
-def _build_workspace_skill_specs(workspace_dir: Path) -> list[SkillSpec]:
-    manifest = read_skill_manifest(workspace_dir, reconcile=True)
+def _build_workspace_skill_specs(
+    workspace_dir: Path,
+    *,
+    reconcile: bool = False,
+) -> list[SkillSpec]:
+    """Build API models from workspace manifest.
+
+    Default ``reconcile=False`` avoids ``ensure_skills_initialized`` on every
+    list request (shared sync + full reconcile is expensive). Call
+    ``ensure_skills_initialized`` or ``POST /skills/refresh`` when a fresh sync
+    is required.
+    """
+    manifest = read_skill_manifest(workspace_dir, reconcile=reconcile)
     entries = manifest.get("skills", {})
     skill_root = get_workspace_skills_dir(workspace_dir)
     specs: list[SkillSpec] = []
@@ -541,42 +544,12 @@ def _build_pool_skill_specs() -> list[PoolSkillSpec]:
     return specs
 
 
-def _resolve_user_id(user_id: Optional[str]) -> str:
-    """Resolve user_id from dependency or context (JWT)."""
-    return user_id or get_context_user_id() or "default"
-
-
 @router.get("")
 async def list_skills(
     request: Request,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> list[SkillSpec]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        all_skills = SkillServiceLCAgent.list_all_skills(user_id=uid)
-
-        if uid != "default":
-            available_set = get_user_enabled_skills(uid)
-        else:
-            available_set = set(list_available_skills(uid))
-
-        skills_spec = []
-        for skill in all_skills:
-            skills_spec.append(
-                SkillSpec(
-                    name=skill.name,
-                    description=skill.description,
-                    version_text=skill.version_text,
-                    content=skill.content,
-                    source=skill.source,
-                    path=skill.path,
-                    references=skill.references,
-                    scripts=skill.scripts,
-                    enabled=skill.name in available_set,
-                ),
-            )
-        return skills_spec
-
+    # LCAgent 隔离与非隔离均按当前 Agent 工作区 manifest（与 /skills/save、运行时
+    # resolve_effective_skills 同源）；勿再用 users/<uid>/active_skills 与 workspace 双轨。
     workspace_dir = await _request_workspace_dir(request)
     return _build_workspace_skill_specs(workspace_dir)
 
@@ -584,30 +557,7 @@ async def list_skills(
 @router.get("/available")
 async def get_available_skills(
     request: Request,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> list[SkillSpec]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        available_skills = SkillServiceLCAgent.list_available_skills(
-            user_id=uid
-        )
-        skills_spec = []
-        for skill in available_skills:
-            skills_spec.append(
-                SkillSpec(
-                    name=skill.name,
-                    description=skill.description,
-                    version_text=skill.version_text,
-                    content=skill.content,
-                    source=skill.source,
-                    path=skill.path,
-                    references=skill.references,
-                    scripts=skill.scripts,
-                    enabled=True,
-                ),
-            )
-        return skills_spec
-
     workspace_dir = await _request_workspace_dir(request)
     specs = _build_workspace_skill_specs(workspace_dir)
     return [s for s in specs if s.enabled]
@@ -615,15 +565,10 @@ async def get_available_skills(
 
 @router.post("/refresh")
 async def refresh_skills(request: Request) -> list[SkillSpec]:
-    """Force reconcile and return updated workspace skill list."""
-    if copaw_storage_isolation_enabled():
-        raise HTTPException(
-            status_code=404,
-            detail="Not available when storage isolation is enabled",
-        )
+    """Force shared sync + reconcile and return updated workspace skill list."""
     workspace_dir = await _request_workspace_dir(request)
-    reconcile_workspace_manifest(workspace_dir)
-    return _build_workspace_skill_specs(workspace_dir)
+    ensure_skills_initialized(workspace_dir)
+    return _build_workspace_skill_specs(workspace_dir, reconcile=False)
 
 
 @router.get("/hub/search")
@@ -745,33 +690,7 @@ async def list_pool_builtin_sources() -> list[BuiltinImportSpec]:
 async def create_skill(
     request: Request,
     body: CreateSkillRequest,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        try:
-            created = SkillServiceLCAgent.create_skill(
-                name=body.name,
-                content=body.content,
-                overwrite=body.overwrite,
-                references=body.references,
-                scripts=body.scripts,
-                user_id=uid,
-            )
-        except SkillScanError as exc:
-            return _scan_error_response(exc)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not created:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "reason": "conflict",
-                    "suggested_name": suggest_conflict_name(body.name),
-                },
-            )
-        return {"created": True, "name": created}
-
     from ..agent_context import get_agent_for_request
 
     workspace = await get_agent_for_request(request)
@@ -1220,13 +1139,17 @@ async def batch_delete_skills(
     skills: list[str],
 ) -> dict[str, Any]:
     """Auto-disable then delete each skill. Per-skill results."""
+    from ..agent_context import get_agent_for_request
+
     workspace_dir = await _request_workspace_dir(request)
     service = SkillService(workspace_dir)
     results: dict[str, Any] = {}
+    any_deleted = False
     for skill_name in skills:
         try:
             service.disable_skill(skill_name)
             deleted = service.delete_skill(skill_name)
+            any_deleted = any_deleted or deleted
             results[skill_name] = {
                 "success": deleted,
                 "reason": None if deleted else "delete_failed",
@@ -1236,6 +1159,9 @@ async def batch_delete_skills(
                 "success": False,
                 "reason": str(exc),
             }
+    if any_deleted:
+        workspace = await get_agent_for_request(request)
+        schedule_agent_reload(request, workspace.agent_id)
     return {"results": results}
 
 
@@ -1265,20 +1191,7 @@ async def batch_delete_pool_skills(
 async def batch_disable_skills(
     request: Request,
     skills: list[str],
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        if uid != "default":
-            for name in skills:
-                remove_user_enabled_skill(uid, name)
-            return {"results": {n: {"success": True} for n in skills}}
-        results = {
-            n: {"success": SkillServiceLCAgent.disable_skill(n, user_id=uid)}
-            for n in skills
-        }
-        return {"results": results}
-
     workspace_dir = await _request_workspace_dir(request)
     service = SkillService(workspace_dir)
     results = {skill: service.disable_skill(skill) for skill in skills}
@@ -1289,27 +1202,7 @@ async def batch_disable_skills(
 async def batch_enable_skills(
     request: Request,
     skills: list[str],
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        if uid != "default":
-            for name in skills:
-                add_user_enabled_skill(uid, name)
-            return {"results": {n: {"success": True} for n in skills}}
-        results: dict[str, Any] = {}
-        for skill in skills:
-            try:
-                ok = SkillServiceLCAgent.enable_skill(skill, user_id=uid)
-                results[skill] = {"success": ok}
-            except SkillScanError as exc:
-                results[skill] = {
-                    "success": False,
-                    "reason": "security_scan_failed",
-                    "detail": _scan_error_payload(exc),
-                }
-        return {"results": results}
-
     workspace_dir = await _request_workspace_dir(request)
     service = SkillService(workspace_dir)
     results = {}
@@ -1329,16 +1222,7 @@ async def batch_enable_skills(
 async def disable_skill(
     request: Request,
     skill_name: str,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        if uid != "default":
-            remove_user_enabled_skill(uid, skill_name)
-            return {"disabled": True}
-        result = SkillServiceLCAgent.disable_skill(skill_name, user_id=uid)
-        return {"disabled": result}
-
     from ..agent_context import get_agent_for_request
 
     workspace = await get_agent_for_request(request)
@@ -1354,16 +1238,7 @@ async def disable_skill(
 async def enable_skill(
     request: Request,
     skill_name: str,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        if uid != "default":
-            add_user_enabled_skill(uid, skill_name)
-            return {"enabled": True}
-        result = SkillServiceLCAgent.enable_skill(skill_name, user_id=uid)
-        return {"enabled": result}
-
     from ..agent_context import get_agent_for_request
 
     workspace = await get_agent_for_request(request)
@@ -1385,14 +1260,11 @@ async def enable_skill(
 async def delete_skill(
     request: Request,
     skill_name: str,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        result = SkillServiceLCAgent.delete_skill(skill_name, user_id=uid)
-        return {"deleted": result}
+    from ..agent_context import get_agent_for_request
 
-    workspace_dir = await _request_workspace_dir(request)
+    workspace = await get_agent_for_request(request)
+    workspace_dir = Path(workspace.workspace_dir)
     service = SkillService(workspace_dir)
     service.disable_skill(skill_name)
     deleted = service.delete_skill(skill_name)
@@ -1401,6 +1273,7 @@ async def delete_skill(
             status_code=409,
             detail="Only disabled workspace skills can be deleted",
         )
+    schedule_agent_reload(request, workspace.agent_id)
     return {"deleted": True}
 
 
@@ -1410,24 +1283,14 @@ async def load_skill_file(
     skill_name: str,
     source: str,
     file_path: str,
-    user_id: Optional[str] = Depends(get_current_user_id),
 ) -> dict[str, Any]:
     """Load a file under references/ or scripts/ for a skill."""
-    if copaw_storage_isolation_enabled():
-        uid = _resolve_user_id(user_id)
-        content = SkillServiceLCAgent.load_skill_file(
-            skill_name=skill_name,
-            file_path=file_path,
-            source=source,
-            user_id=uid,
-        )
-    else:
-        workspace_dir = await _request_workspace_dir(request)
-        content = SkillService(workspace_dir).load_skill_file(
-            skill_name=skill_name,
-            file_path=file_path,
-            source=source,
-        )
+    workspace_dir = await _request_workspace_dir(request)
+    content = SkillService(workspace_dir).load_skill_file(
+        skill_name=skill_name,
+        file_path=file_path,
+        source=source,
+    )
     if content is None:
         raise HTTPException(status_code=404, detail="File not found")
     return {"content": content}

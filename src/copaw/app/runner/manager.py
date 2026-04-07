@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Optional
 
+from ...config.utils import DEFAULT_USER_ID, copaw_storage_isolation_enabled
+from ...context import get_context_user_id
 from .models import ChatSpec
 from .repo import BaseChatRepository
 from ..channels.schema import DEFAULT_CHANNEL
@@ -239,3 +242,83 @@ class ChatManager:
                 f"(from {len(matching_chats)} matches)",
             )
             return most_recent.id
+
+
+class TenantRoutingChatManager:
+    """Route chat specs to ``users/<uid>/chats.json`` when LCAgent isolation is on.
+
+    Workspace services and the runner must use the same persistence as
+    ``GET /chats`` (per-user JSON). This wrapper forwards to the same
+    :class:`ChatManager` factory used by ``app.state.chat_manager_factory``.
+    """
+
+    def __init__(self, factory: Callable[[str], ChatManager]) -> None:
+        self._factory = factory
+
+    def _tenant_uid(self, explicit_user_id: Optional[str]) -> str:
+        if copaw_storage_isolation_enabled():
+            ctx = (get_context_user_id() or "").strip()
+            if ctx:
+                return ctx
+        uid = (explicit_user_id or "").strip()
+        return uid or DEFAULT_USER_ID
+
+    def _spec_user_id(self, explicit_user_id: Optional[str]) -> str:
+        return self._tenant_uid(explicit_user_id)
+
+    async def list_chats(
+        self,
+        user_id: Optional[str] = None,
+        channel: Optional[str] = None,
+    ) -> list[ChatSpec]:
+        mgr = self._factory(self._tenant_uid(user_id))
+        return await mgr.list_chats(user_id=user_id, channel=channel)
+
+    async def get_chat(self, chat_id: str) -> Optional[ChatSpec]:
+        mgr = self._factory(self._tenant_uid(None))
+        return await mgr.get_chat(chat_id)
+
+    async def get_or_create_chat(
+        self,
+        session_id: str,
+        user_id: str,
+        channel: str = DEFAULT_CHANNEL,
+        name: str = "New Chat",
+    ) -> ChatSpec:
+        tid = self._tenant_uid(user_id)
+        spec_uid = self._spec_user_id(user_id)
+        mgr = self._factory(tid)
+        return await mgr.get_or_create_chat(
+            session_id,
+            spec_uid,
+            channel,
+            name=name,
+        )
+
+    async def create_chat(self, spec: ChatSpec) -> ChatSpec:
+        mgr = self._factory(self._tenant_uid(spec.user_id))
+        return await mgr.create_chat(spec)
+
+    async def update_chat(self, spec: ChatSpec) -> ChatSpec:
+        mgr = self._factory(self._tenant_uid(spec.user_id))
+        return await mgr.update_chat(spec)
+
+    async def delete_chats(self, chat_ids: list[str]) -> bool:
+        mgr = self._factory(self._tenant_uid(None))
+        return await mgr.delete_chats(chat_ids)
+
+    async def count_chats(
+        self,
+        user_id: Optional[str] = None,
+        channel: Optional[str] = None,
+    ) -> int:
+        mgr = self._factory(self._tenant_uid(user_id))
+        return await mgr.count_chats(user_id=user_id, channel=channel)
+
+    async def get_chat_id_by_session(
+        self,
+        session_id: str,
+        channel: str,
+    ) -> str | None:
+        mgr = self._factory(self._tenant_uid(None))
+        return await mgr.get_chat_id_by_session(session_id, channel)

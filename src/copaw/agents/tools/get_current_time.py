@@ -9,6 +9,7 @@ from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
 from ...config import load_config, save_config
+from ...context import get_effective_config_path
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ async def get_current_time() -> ToolResponse:
             The current time string,
             e.g. "2026-02-13 19:30:45 Asia/Shanghai (Friday)".
     """
-    user_tz = load_config().user_timezone or "UTC"
+    user_tz = load_config(get_effective_config_path()).user_timezone or "UTC"
     try:
         now = datetime.now(ZoneInfo(user_tz))
     except (ZoneInfoNotFoundError, KeyError):
@@ -77,9 +78,10 @@ async def set_user_timezone(timezone_name: str) -> ToolResponse:
             ],
         )
 
-    config = load_config()
+    cfg_path = get_effective_config_path()
+    config = load_config(cfg_path)
     config.user_timezone = tz_name
-    save_config(config)
+    save_config(config, cfg_path)
 
     time_str = (
         f"{now.strftime('%Y-%m-%d %H:%M:%S')} "

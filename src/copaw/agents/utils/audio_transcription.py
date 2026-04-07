@@ -115,8 +115,9 @@ def list_transcription_providers() -> List[dict]:
 def get_configured_transcription_provider_id() -> str:
     """Return the explicitly configured provider ID (raw config value)."""
     from ...config import load_config
+    from ...context import get_effective_config_path
 
-    return load_config().agents.transcription_provider_id
+    return load_config(get_effective_config_path()).agents.transcription_provider_id
 
 
 def check_local_whisper_available() -> dict:
@@ -207,8 +208,11 @@ def _get_configured_provider_creds() -> Optional[Tuple[str, str]]:
     provider is not found / has no usable credentials.
     """
     from ...config import load_config
+    from ...context import get_effective_config_path
 
-    configured_id = load_config().agents.transcription_provider_id
+    configured_id = load_config(
+        get_effective_config_path(),
+    ).agents.transcription_provider_id
     if not configured_id:
         return None
 
@@ -257,8 +261,12 @@ async def _transcribe_whisper_api(file_path: str) -> Optional[str]:
         return None
 
     from ...config import load_config
+    from ...context import get_effective_config_path
 
-    model_name = load_config().agents.transcription_model or "whisper-1"
+    model_name = (
+        load_config(get_effective_config_path()).agents.transcription_model
+        or "whisper-1"
+    )
 
     client = AsyncOpenAI(
         base_url=base_url,
@@ -302,8 +310,11 @@ async def transcribe_audio(file_path: str) -> Optional[str]:
     Returns the transcribed text, or ``None`` on failure.
     """
     from ...config import load_config
+    from ...context import get_effective_config_path
 
-    provider_type = load_config().agents.transcription_provider_type
+    provider_type = load_config(
+        get_effective_config_path(),
+    ).agents.transcription_provider_type
 
     if provider_type == "disabled":
         logger.debug("Transcription is disabled; skipping")

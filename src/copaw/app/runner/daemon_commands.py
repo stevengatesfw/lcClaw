@@ -55,6 +55,7 @@ class DaemonContext:
     # For /daemon restart: manager and agent_id for zero-downtime reload
     manager: Optional["MultiAgentManager"] = None
     agent_id: Optional[str] = None
+    config_path: Optional[Path] = None
     # Session ID for approval commands.
     session_id: str = ""
 
@@ -127,7 +128,15 @@ async def run_daemon_restart(context: DaemonContext) -> str:
     """Trigger zero-downtime agent reload or instruct user."""
     if context.manager is not None and context.agent_id is not None:
         try:
-            success = await context.manager.reload_agent(context.agent_id)
+            cfg_path = context.config_path
+            if cfg_path is None:
+                from ...config.utils import get_config_path
+
+                cfg_path = get_config_path()
+            success = await context.manager.reload_agent(
+                context.agent_id,
+                config_path=cfg_path,
+            )
             if success:
                 return (
                     "**Restart completed**\n\n"

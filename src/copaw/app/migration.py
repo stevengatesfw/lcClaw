@@ -26,7 +26,7 @@ from ..constant import (
     BUILTIN_QA_AGENT_SKILL_NAMES,
     WORKING_DIR,
 )
-from ..config.utils import load_config, save_config
+from ..config.utils import get_config_path, load_config, save_config
 
 logger = logging.getLogger(__name__)
 
@@ -632,43 +632,58 @@ def ensure_default_agent_exists() -> None:
         )
 
 
-def _do_ensure_default_agent() -> None:
-    """Internal implementation of default agent initialization."""
-    config = load_config()
+def _do_ensure_default_agent_at(
+    config_path: Path,
+    workspace_root: Path,
+) -> None:
+    """Ensure default profile + workspace under *workspace_root*."""
+    config = load_config(config_path)
 
-    # Get or determine default workspace path
     if "default" in config.agents.profiles:
         agent_ref = config.agents.profiles["default"]
         default_workspace = Path(agent_ref.workspace_dir).expanduser()
         agent_existed = True
     else:
-        default_workspace = Path(
-            f"{WORKING_DIR}/workspaces/default",
-        ).expanduser()
+        default_workspace = (workspace_root / "workspaces" / "default").expanduser()
         agent_existed = False
 
-    # Ensure workspace directory exists
     default_workspace.mkdir(parents=True, exist_ok=True)
 
     _ensure_workspace_json_files(default_workspace, "default agent")
 
-    # Only update config if agent didn't exist
     if not agent_existed:
-        logger.info("Creating default agent...")
+        logger.info("Creating default agent at %s ...", default_workspace)
 
-        # Add default agent reference to config
         config.agents.profiles["default"] = AgentProfileRef(
             id="default",
             workspace_dir=str(default_workspace),
         )
 
-        # Set as active if no active agent
         if not config.agents.active_agent:
             config.agents.active_agent = "default"
 
-        save_config(config)
+        save_config(config, config_path)
         logger.info(
-            f"Created default agent with workspace: {default_workspace}",
+            "Created default agent with workspace: %s",
+            default_workspace,
+        )
+
+
+def _do_ensure_default_agent() -> None:
+    """Internal implementation of default agent initialization (global)."""
+    _do_ensure_default_agent_at(get_config_path(), WORKING_DIR)
+
+
+def ensure_tenant_default_agent(config_path: Path) -> None:
+    """First-visit seed: default agent under ``config_path.parent`` (e.g. users/uid)."""
+    try:
+        _do_ensure_default_agent_at(config_path, config_path.parent)
+    except Exception as e:
+        logger.error(
+            "Failed to ensure default agent for %s: %s",
+            config_path,
+            e,
+            exc_info=True,
         )
 
 

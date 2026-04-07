@@ -8,7 +8,12 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config.utils import get_user_working_dir
+from .config.utils import (
+    copaw_storage_isolation_enabled,
+    get_config_path,
+    get_config_path_for_user,
+    get_user_working_dir,
+)
 
 # Current request's user_id (from JWT when LAZY_PLATFORM_KEY is set).
 # Set by auth middleware; used when AgentRequest.user_id is empty.
@@ -103,3 +108,17 @@ def get_current_working_dir() -> Path:
     if val is not None:
         return val
     return get_user_working_dir(None)
+
+
+def get_effective_config_path() -> Path:
+    """Config.json path for code paths without a FastAPI Request.
+
+    Uses JWT context user_id when storage isolation is on; otherwise global
+    ``get_config_path()``. If isolation is on but context has no user_id yet,
+    falls back to global path (legacy / cron); prefer passing explicit paths.
+    """
+    if copaw_storage_isolation_enabled():
+        uid = get_context_user_id()
+        if uid:
+            return get_config_path_for_user(uid)
+    return get_config_path()
