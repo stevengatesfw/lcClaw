@@ -261,7 +261,10 @@ function RuntimeLoadingBridge({
   return null;
 }
 
-async function fetchHomeLlmAllowed(): Promise<{ ok: boolean; message?: string }> {
+async function fetchHomeLlmAllowed(): Promise<{
+  ok: boolean;
+  message?: string;
+}> {
   const token = getApiToken();
   const headers: HeadersInit = {
     "Content-Type": "application/json",

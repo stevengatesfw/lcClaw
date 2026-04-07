@@ -28,7 +28,8 @@ export function getApiUrl(path: string): string {
   if (isLcagentCopawMount()) {
     return `/copaw${apiSuffix}`;
   }
-  const base = typeof VITE_API_BASE_URL !== "undefined" ? VITE_API_BASE_URL || "" : "";
+  const base =
+    typeof VITE_API_BASE_URL !== "undefined" ? VITE_API_BASE_URL || "" : "";
   return `${base}${apiSuffix}`;
 }
 

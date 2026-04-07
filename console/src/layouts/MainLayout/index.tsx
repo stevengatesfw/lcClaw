@@ -86,10 +86,7 @@ export default function MainLayout() {
               <Route path="/mcp" element={<MCPPage />} />
               <Route path="/workspace" element={<WorkspacePage />} />
               <Route path="/agents" element={<AgentsPage />} />
-              <Route
-                path="/models"
-                element={<Navigate to="/chat" replace />}
-              />
+              <Route path="/models" element={<Navigate to="/chat" replace />} />
               <Route path="/environments" element={<EnvironmentsPage />} />
               <Route path="/agent-config" element={<AgentConfigPage />} />
               <Route path="/security" element={<SecurityPage />} />

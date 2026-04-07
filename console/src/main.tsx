@@ -13,7 +13,8 @@ const LCAGENT_AUTH_MESSAGE_TYPE = "lcagent:auth";
 
 if (typeof window !== "undefined") {
   // Fallback: token injected by LCAgent proxy (window.__COPAW_TOKEN)
-  const injected = (window as unknown as { __COPAW_TOKEN?: string }).__COPAW_TOKEN;
+  const injected = (window as unknown as { __COPAW_TOKEN?: string })
+    .__COPAW_TOKEN;
   if (injected) setToken(injected);
 
   // 与 LCAgent 同域 iframe：父页 lcClaw 会 postMessage；若晚于首屏或丢失，同源 localStorage 仍有 console_token
@@ -58,5 +59,5 @@ if (typeof window !== "undefined") {
 createRoot(document.getElementById("root")!).render(
   <AuthGuard>
     <App />
-  </AuthGuard>
+  </AuthGuard>,
 );
