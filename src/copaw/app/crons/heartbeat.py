@@ -117,6 +117,7 @@ def _in_active_hours(active_hours: Any) -> bool:
     return now >= start_t or now <= end_t
 
 
+# pylint: disable-next=too-many-branches,too-many-statements
 async def run_heartbeat_once(
     *,
     runner: Any,

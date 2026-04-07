@@ -5,7 +5,14 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import segno
-from fastapi import APIRouter, Body, Depends, HTTPException, Path as PathParam, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path as PathParam,
+    Request,
+)
 from pydantic import BaseModel
 
 from ..utils import schedule_agent_reload

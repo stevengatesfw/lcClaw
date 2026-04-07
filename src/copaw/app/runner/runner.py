@@ -73,7 +73,7 @@ def _is_approval(text: str) -> bool:
 
 
 def _llm_cfg_from_process_meta() -> Optional[ResolvedModelConfig]:
-    """Build ResolvedModelConfig from agent/process JSON meta (LCAgent proxy)."""
+    """Build ResolvedModelConfig from agent/process meta (LCAgent proxy)."""
     meta = get_process_request_meta()
     raw = meta.get("lcagent_resolved_llm")
     if not isinstance(raw, dict):
@@ -106,7 +106,9 @@ def _feature_flags_from_process_meta() -> tuple[bool, bool]:
     """
     meta = get_process_request_meta()
     enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=False)
-    enable_skills = _meta_bool(meta.get("lcagent_enable_skills"), default=False)
+    enable_skills = _meta_bool(
+        meta.get("lcagent_enable_skills"), default=False
+    )
     return enable_agent, enable_skills
 
 
@@ -133,7 +135,7 @@ class AgentRunner(Runner):
         self._task_tracker = task_tracker
 
     def _memory_manager_cache_key(self, user_id: str | None) -> tuple:
-        """Include LCAgent llm override in key so cache matches active home model."""
+        """Include LCAgent llm override so cache matches active home model."""
         uid = user_id or "default"
         o = self._request_llm_cfg_override
         if o is None:
@@ -150,7 +152,7 @@ class AgentRunner(Runner):
         """Set chat manager for auto-registration.
 
         Args:
-            chat_manager_or_factory: ChatManager instance, or callable(user_id) -> ChatManager
+            chat_manager_or_factory: ChatManager or callable(uid) -> ChatManager
         """
         if callable(chat_manager_or_factory):
             self._chat_manager_factory = chat_manager_or_factory
@@ -165,11 +167,13 @@ class AgentRunner(Runner):
             return self._chat_manager_factory(user_id or "")
         return self._chat_manager
 
-    async def _get_memory_manager(self, user_id: str | None) -> ReMeLightMemoryManager | None:
-        """Resolve ReMeLight memory manager for user_id (per-user when isolation enabled).
+    async def _get_memory_manager(
+        self, user_id: str | None
+    ) -> ReMeLightMemoryManager | None:
+        """Resolve ReMeLight memory manager for user_id (per-user if isolated).
 
-        Lazy-creates and caches per user. Each instance uses users/<user_id> as
-        working_dir when isolation is enabled. Matches Workspace memory wiring.
+        Lazy-creates and caches per user. Uses users/<user_id> as working_dir
+        when isolation is enabled. Matches Workspace memory wiring.
         """
         cache_key = self._memory_manager_cache_key(user_id)
         if cache_key in self._memory_manager_cache:
@@ -184,7 +188,11 @@ class AgentRunner(Runner):
             self._memory_manager_cache[cache_key] = mgr
             return mgr
         except Exception as e:
-            logger.exception("ReMeLightMemoryManager create for user %s failed: %s", cache_key, e)
+            logger.exception(
+                "ReMeLightMemoryManager create for user %s failed: %s",
+                cache_key,
+                e,
+            )
             return None
 
     def set_mcp_manager(self, mcp_manager):
@@ -243,7 +251,9 @@ class AgentRunner(Runner):
                         try:
                             await mgr.init_from_config(cfg.mcp)
                         except Exception:
-                            logger.exception("MCP init failed for user %s", uid)
+                            logger.exception(
+                                "MCP init failed for user %s", uid
+                            )
                     self._mcp_managers_cache[uid] = mgr
         return await mgr.get_clients()
 
@@ -410,8 +420,11 @@ class AgentRunner(Runner):
             self._request_llm_cfg_override = _llm_cfg_from_process_meta()
             enable_agent, enable_skills = _feature_flags_from_process_meta()
             session_id = request.session_id
-            # Prefer JWT context (set by UserIdContextMiddleware) over body; body may not be updated by middleware in some stacks
-            user_id = get_context_user_id() or getattr(request, "user_id", None)
+            # Prefer JWT context (UserIdContextMiddleware) over body; body
+            # may not be updated by middleware in some stacks.
+            user_id = get_context_user_id() or getattr(
+                request, "user_id", None
+            )
             channel = getattr(request, "channel", DEFAULT_CHANNEL)
 
             logger.info(
@@ -454,15 +467,19 @@ class AgentRunner(Runner):
                 f"  - enable_skills: {enable_skills}\n"
             )
             proc_meta = get_process_request_meta()
-            _pub_base = str(
-                proc_meta.get("lcagent_console_public_base") or "",
-            ).strip().rstrip("/")
+            _pub_base = (
+                str(
+                    proc_meta.get("lcagent_console_public_base") or "",
+                )
+                .strip()
+                .rstrip("/")
+            )
             _link_tpl = (
                 f"{_pub_base}/agent/<应用UUID>"
                 if _pub_base
                 else (
-                    "/agent/<应用UUID>（在 LCAgent 控制台对外访问域名下打开，"
-                    "与控制台「复制应用链接」一致）"
+                    "/agent/<应用UUID>（在 LCAgent 控制台域名下打开，"
+                    "与「复制应用链接」一致）"
                 )
             )
             _raw_pub_apps = proc_meta.get("lcagent_published_apps")
@@ -473,9 +490,10 @@ class AgentRunner(Runner):
             )
             if _has_published_app_list:
                 env_context += (
-                    "\n- 当前用户可见的已发布应用（来自 meta.lcagent_published_apps）。"
-                    "用户询问「有哪些已发布应用 / 能用哪些工作流」时，**必须仅依据下列列表作答**，"
-                    "不得编造未列出的应用名称或链接。\n"
+                    "\n- 当前用户可见的已发布应用"
+                    "（来自 meta.lcagent_published_apps）。"
+                    "用户问「有哪些已发布应用」时**仅依据下列列表**，"
+                    "不得编造。\n"
                 )
                 for entry in _raw_pub_apps:
                     if not isinstance(entry, dict):
@@ -490,9 +508,9 @@ class AgentRunner(Runner):
                     if desc:
                         env_context += f"    简介: {desc}\n"
                 env_context += (
-                    "  调用 invoke_lcagent_published_app 时，将所选应用的 app_id 传入工具参数。"
-                    "若下文另行说明了「默认已发布应用」，也可将 app_id **留空**以使用该默认；"
-                    "若下文无默认应用，则**不可**留空 app_id。\n"
+                    "  调用 invoke_lcagent_published_app 时传入所选 app_id。"
+                    "若下文有「默认已发布应用」，可将 app_id **留空**；"
+                    "否则**不可**留空。\n"
                 )
 
             pub_app = proc_meta.get("lcagent_published_app_id")
@@ -503,12 +521,14 @@ class AgentRunner(Runner):
                     else f"/agent/{pub_app}"
                 )
                 env_context += (
-                    "\n- LCAgent 服务端为本轮会话解析的默认已发布应用（invoke_lcagent_published_app 在 "
-                    "参数 app_id 留空时使用该 UUID）:\n"
+                    "\n- 本轮默认已发布应用（invoke_lcagent_published_app 在 "
+                    "app_id 留空时使用该 UUID）:\n"
                     f"  - 应用 ID: {pub_app}\n"
-                    f"  - 应用链接（可告知用户在浏览器打开）: {_default_link}\n"
+                    f"  - 应用链接（浏览器打开）: {_default_link}\n"
                 )
-                pub_name = str(proc_meta.get("lcagent_published_app_name") or "").strip()
+                pub_name = str(
+                    proc_meta.get("lcagent_published_app_name") or ""
+                ).strip()
                 pub_desc = str(
                     proc_meta.get("lcagent_published_app_description") or "",
                 ).strip()
@@ -516,45 +536,52 @@ class AgentRunner(Runner):
                     env_context += f"  - 应用名称: {pub_name}\n"
                 if pub_desc:
                     _lim = 2000
-                    _d = pub_desc if len(pub_desc) <= _lim else pub_desc[:_lim] + "…"
+                    _d = (
+                        pub_desc
+                        if len(pub_desc) <= _lim
+                        else pub_desc[:_lim] + "…"
+                    )
                     env_context += f"  - 应用简介: {_d}\n"
                 env_context += (
-                    "  - 说明: 向用户介绍应用用途时请优先依据名称与简介，不要只报 UUID；"
-                    "若用户未指定其它应用，可调用工具时将 app_id 留空以使用上述默认应用。\n"
+                    "  - 说明: 介绍应用时优先用名称与简介，不要只报 UUID；"
+                    "未指定其它应用时可将 app_id 留空用默认。\n"
                 )
             elif enable_agent:
                 if _has_published_app_list:
                     env_context += (
-                        "\n- LCAgent：当前 meta 未注入 lcagent_published_app_id（无单一默认应用）。"
-                        "请从上方「已发布应用」列表中选择 app_id 调用 invoke_lcagent_published_app，"
-                        "不要将 app_id 留空。\n"
+                        "\n- meta 未注入 lcagent_published_app_id（无默认）。"
+                        "请从上方列表选 app_id 调用 invoke_lcagent_published_app，"
+                        "勿留空。\n"
                     )
                 else:
                     env_context += (
-                        "\n- LCAgent 已发布工作流应用：当前 meta 既无 lcagent_published_app_id，"
-                        "也未提供 lcagent_published_apps 列表；调用 invoke_lcagent_published_app 时"
-                        "请在参数 app_id 中传入目标应用的 UUID。\n"
-                        f"  - 应用链接形态: {_link_tpl}；已发布且当前用户可见的应用均可被该工具调用，"
-                        "**无需**在 LCAgent 中单独开启「API」或「API 调用」开关。\n"
+                        "\n- 已发布应用：meta 无 lcagent_published_app_id 与列表；"
+                        "invoke_lcagent_published_app 请在 app_id 传入 UUID。\n"
+                        f"  - 链接形态: {_link_tpl}；可见应用均可调用，"
+                        "**无需**单独开 API 开关。\n"
                     )
 
             if enable_agent and proc_meta.get("lcagent_console_api_base"):
                 env_context += (
-                    "\n- LCAgent 已发布应用（invoke_lcagent_published_app）返回的路径与链接：\n"
-                    "  文中的 /app/upload/、/tmp/ 以及 /console/api/files/download?file_path=… 等指向 **LCAgent 后端** 上的文件，"
-                    "**不在**当前 CoPaw 工作目录。请勿用 read_file、view_image、send_file_to_user 等在本地验证这些路径；"
-                    "若已含 Markdown 图片或下载链接，请直接输出给用户，用户在同一 LCAgent 站点下即可打开。\n"
+                    "\n- 已发布应用返回的路径与链接：\n"
+                    "  /app/upload/、/tmp/、/console/api/files/download?… 等"
+                    "在 **LCAgent 后端**，**不在** CoPaw 工作目录。"
+                    "勿用 read_file 等本地验证；有链接则原样给用户。\n"
                 )
                 if proc_meta.get("lcagent_user_attachment_paths"):
                     env_context += (
-                        "  本轮用户已上传附件：路径已在 meta.lcagent_user_attachment_paths，"
-                        "调用 invoke_lcagent_published_app 时会自动随请求传给工作流，无需在 CoPaw 本地再读该文件。\n"
+                        "  附件路径在 meta.lcagent_user_attachment_paths；"
+                        "invoke_lcagent_published_app 会随请求传给工作流。\n"
                     )
                     att_names = proc_meta.get("lcagent_user_attachment_names")
                     if isinstance(att_names, list) and att_names:
+                        names_line = ", ".join(
+                            str(x) for x in att_names if str(x).strip()
+                        )
                         env_context += (
-                            "  附件文件名（用户问「上传了什么」时直接据此回答，勿用 list_dir/read_file 扫 CoPaw 工作区）："
-                            f"{', '.join(str(x) for x in att_names if str(x).strip())}\n"
+                            "  附件文件名（用户问「上传了什么」据此回答，"
+                            "勿扫工作区）："
+                            f"{names_line}\n"
                         )
 
             mcp_clients = await self._get_mcp_clients_for_user(user_id)
@@ -831,6 +858,7 @@ class AgentRunner(Runner):
                 / "sessions",
             )
             self.session = SafeJSONSession(save_dir=session_dir)
+
     async def shutdown_handler(self, *args, **kwargs):
         """
         Shutdown handler.
@@ -840,7 +868,9 @@ class AgentRunner(Runner):
                 await mgr.close()
             except Exception as e:
                 logger.warning(
-                    "memory manager close for user %s failed: %s", cache_key, e
+                    "memory manager close for user %s failed: %s",
+                    cache_key,
+                    e,
                 )
         self._memory_manager_cache.clear()
         await self.shutdown_mcp_managers_cache()

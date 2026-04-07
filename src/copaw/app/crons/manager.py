@@ -38,8 +38,7 @@ logger = logging.getLogger(__name__)
 def _heartbeat_user_job_id(user_id: str) -> str:
     """APScheduler-safe id for per-user heartbeat."""
     safe = "".join(
-        c if c.isalnum() or c in "-_" else "_"
-        for c in (user_id or "default")
+        c if c.isalnum() or c in "-_" else "_" for c in (user_id or "default")
     )
     return f"_heartbeat_user_{safe}"
 
@@ -255,7 +254,7 @@ class CronManager:
         return _cb
 
     async def _register_all_user_heartbeats(self) -> None:
-        """Remove old user heartbeat jobs and register from users/*/config.json."""
+        """Remove old user heartbeat jobs; register from users/*/config."""
         for job in list(self._scheduler.get_jobs()):
             jid = job.id
             if isinstance(jid, str) and jid.startswith("_heartbeat_user_"):

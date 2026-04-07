@@ -17,7 +17,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -581,7 +588,9 @@ async def get_available_skills(
 ) -> list[SkillSpec]:
     if copaw_storage_isolation_enabled():
         uid = _resolve_user_id(user_id)
-        available_skills = SkillServiceLCAgent.list_available_skills(user_id=uid)
+        available_skills = SkillServiceLCAgent.list_available_skills(
+            user_id=uid
+        )
         skills_spec = []
         for skill in available_skills:
             skills_spec.append(

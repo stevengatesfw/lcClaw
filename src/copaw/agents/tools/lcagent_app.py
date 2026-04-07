@@ -21,7 +21,10 @@ def _lcagent_tool_text(text: str) -> ToolResponse:
     )
 
 
-def invoke_lcagent_published_app(query: str, app_id: str = "") -> ToolResponse:
+def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,too-many-branches
+    query: str,
+    app_id: str = "",
+) -> ToolResponse:
     """调用 LCAgent 上已发布的工作流应用，返回应用主回复文本。
 
     已发布（status 正常）且当前用户可见的应用均可调用，不依赖单独开启「API / API 调用」开关。
@@ -41,8 +44,9 @@ def invoke_lcagent_published_app(query: str, app_id: str = "") -> ToolResponse:
 
     Returns:
         ``ToolResponse``，正文为应用输出（可能含文件 URL）或错误说明。
-        其中的 ``/app/upload/``、``/console/api/files/download`` 等资源在 **LCAgent 服务器** 上，
-        勿在当前环境用本地文件工具去读取；把链接或 Markdown 原样给用户即可。
+        其中的 ``/app/upload/``、``/console/api/files/download`` 等资源在
+        **LCAgent 服务器** 上，勿在当前环境用本地文件工具去读取；
+        把链接或 Markdown 原样给用户即可。
     """
     meta = get_process_request_meta()
     base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
@@ -51,7 +55,9 @@ def invoke_lcagent_published_app(query: str, app_id: str = "") -> ToolResponse:
             "错误：缺少 lcagent_console_api_base。"
             "请通过 LCAgent 的 CoPaw 代理（POST /console/api/copaw/agent/process）访问。",
         )
-    aid = (app_id or "").strip() or str(meta.get("lcagent_published_app_id") or "").strip()
+    aid = (app_id or "").strip() or str(
+        meta.get("lcagent_published_app_id") or ""
+    ).strip()
     if not aid:
         return _lcagent_tool_text(
             "错误：未指定应用 ID，且 meta 中无 lcagent_published_app_id。"
@@ -71,7 +77,9 @@ def invoke_lcagent_published_app(query: str, app_id: str = "") -> ToolResponse:
             payload["file_paths"] = paths
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(600.0, connect=30.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(600.0, connect=30.0)
+        ) as client:
             resp = client.post(
                 url,
                 json=payload,

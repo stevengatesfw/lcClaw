@@ -667,7 +667,7 @@ def get_file_store_dir_for_user(user_id: Optional[str]) -> Path:
 
 
 def get_customized_skills_dir_for_user(user_id: Optional[str]) -> Path:
-    """Return customized_skills directory for a user. Always uses per-user dir."""
+    """Return per-user customized_skills directory."""
     uid = str(user_id or DEFAULT_USER_ID)
     return (USERS_DIR / uid / "customized_skills").expanduser()
 
@@ -679,7 +679,7 @@ def get_active_skills_dir_for_user(user_id: Optional[str]) -> Path:
 
 
 def copaw_storage_isolation_enabled() -> bool:
-    """True when LCAgent JWT is required for storage (same flag as chat isolation)."""
+    """True when LCAgent JWT is required for storage (chat isolation flag)."""
     return bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
 
@@ -715,7 +715,7 @@ def get_heartbeat_config_from_path(config_path: Path) -> HeartbeatConfig:
 
 
 def iter_user_config_paths() -> list[tuple[str, Path]]:
-    """List (user_id, config.json path) for each ``users/<user_id>/config.json``."""
+    """List (user_id, config path) under ``users/<uid>/config.json``."""
     out: list[tuple[str, Path]] = []
     if not USERS_DIR.is_dir():
         return out

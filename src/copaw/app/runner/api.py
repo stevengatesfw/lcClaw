@@ -24,7 +24,9 @@ router = APIRouter(prefix="/chats", tags=["chats"])
 _ISOLATION_ENABLED = bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
 
-def _get_chat_manager_factory(request: Request) -> Callable[[str], ChatManager]:
+def _get_chat_manager_factory(
+    request: Request,
+) -> Callable[[str], ChatManager]:
     """Get chat manager factory from app state (LCAgent user isolation)."""
     factory = getattr(request.app.state, "chat_manager_factory", None)
     if factory is None:
@@ -46,7 +48,7 @@ async def get_chat_manager(
     request: Request,
     uid: str = Depends(get_current_user_id_required),
 ) -> ChatManager:
-    """Per-user ChatManager when isolation is on; else active agent workspace."""
+    """Per-user ChatManager if isolation; else active agent workspace."""
     if _ISOLATION_ENABLED:
         factory = _get_chat_manager_factory(request)
         return factory(uid or "")
@@ -73,7 +75,7 @@ async def list_chats(
     workspace=Depends(get_workspace),
     uid: str = Depends(get_current_user_id_required),
 ):
-    """List chats; optional per-user filter when LCAgent JWT isolation is enabled."""
+    """List chats; per-user filter when LCAgent JWT isolation is on."""
     user_filter = uid if _ISOLATION_ENABLED else None
     chats = await mgr.list_chats(user_id=user_filter, channel=channel)
     if _ISOLATION_ENABLED:

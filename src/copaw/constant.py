@@ -152,25 +152,23 @@ DOCS_ENABLED = EnvVarLoader.get_bool("COPAW_OPENAPI_DOCS", False)
 ACTIVE_SKILLS_DIR = WORKING_DIR / "active_skills"
 # Customized skills directory (user-created skills)
 CUSTOMIZED_SKILLS_DIR = WORKING_DIR / "customized_skills"
-# Shared skills directory from LCAgent (optional, set via COPAW_SHARED_SKILLS_DIR env)
+# Shared skills dir from LCAgent (optional env COPAW_SHARED_SKILLS_DIR)
 SHARED_SKILLS_DIR = (
-    Path(os.environ.get("COPAW_SHARED_SKILLS_DIR", ""))
-    .resolve()
+    Path(os.environ.get("COPAW_SHARED_SKILLS_DIR", "")).resolve()
     if os.environ.get("COPAW_SHARED_SKILLS_DIR")
     else None
 )
-# Optional path to LCAgent platform_skills_config.json (same file LCAgent writes).
-# When set, only shared skills not in config's "disabled" list are exposed (platform-enabled only).
+# Optional LCAgent platform_skills_config.json (same file LCAgent writes).
+# When set, only skills not in "disabled" are exposed (platform-enabled).
 PLATFORM_SKILLS_CONFIG_PATH = (
-    Path(os.environ.get("COPAW_PLATFORM_SKILLS_CONFIG_PATH", ""))
-    .resolve()
+    Path(os.environ.get("COPAW_PLATFORM_SKILLS_CONFIG_PATH", "")).resolve()
     if os.environ.get("COPAW_PLATFORM_SKILLS_CONFIG_PATH")
     else None
 )
 
 # Memory directory
 MEMORY_DIR = WORKING_DIR / "memory"
-# Per-user data when LAZY_PLATFORM_KEY is set (e.g. users/{user_id}/enabled_skills.json)
+# Per-user data when LAZY_PLATFORM_KEY is set (users/<uid>/...)
 USERS_DIR = WORKING_DIR / "users"
 
 # Custom channel modules (installed via `copaw channels install`); manager

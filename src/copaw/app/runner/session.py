@@ -20,12 +20,15 @@ import logging
 
 from typing import Union, Sequence
 
+from ...config.utils import (
+    copaw_storage_isolation_enabled,
+    get_sessions_dir_for_user,
+)
+
 import aiofiles
 from agentscope.session import SessionBase
 
 logger = logging.getLogger(__name__)
-
-from ...config.utils import copaw_storage_isolation_enabled, get_sessions_dir_for_user
 
 
 # Characters forbidden in Windows filenames
@@ -54,7 +57,7 @@ class SafeJSONSession(SessionBase):
 
         Args:
             save_dir (`str`, defaults to `"./"):
-                The directory to save the session state (used when isolation off).
+                Directory for session state (when isolation off).
         """
         self.save_dir = save_dir
 
@@ -62,7 +65,8 @@ class SafeJSONSession(SessionBase):
         """Return a filesystem-safe save path.
 
         When user isolation is enabled, uses per-user sessions directory.
-        Otherwise uses *save_dir* with optional ``user_id`` prefix in the filename.
+        Otherwise uses *save_dir* with optional ``user_id`` prefix in the
+        filename.
         """
         safe_sid = sanitize_filename(session_id)
         if copaw_storage_isolation_enabled():

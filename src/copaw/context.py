@@ -11,14 +11,14 @@ from typing import Any, Dict, Optional
 from .config.utils import get_user_working_dir
 
 # Current request's user_id (from JWT when LAZY_PLATFORM_KEY is set).
-# Set by auth middleware, used by runner when AgentRequest.user_id is empty.
+# Set by auth middleware; used when AgentRequest.user_id is empty.
 _current_user_id: ContextVar[Optional[str]] = ContextVar(
     "current_user_id",
     default=None,
 )
 
 # Current request's working directory (per-user).
-# Set by runner at start of query_handler, read by file tools and prompt builder.
+# Set by runner in query_handler; read by file tools and prompt builder.
 _current_working_dir: ContextVar[Optional[Path]] = ContextVar(
     "current_working_dir",
     default=None,
@@ -30,7 +30,7 @@ _process_request_meta: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     default=None,
 )
 
-# Raw Authorization header from the upstream agent/process POST (for LCAgent HTTP callbacks).
+# Authorization header from upstream agent/process POST (LCAgent callbacks).
 _request_authorization: ContextVar[Optional[str]] = ContextVar(
     "request_authorization",
     default=None,
@@ -58,7 +58,7 @@ def reset_current_user_id() -> None:
 
 
 def get_context_user_id() -> Optional[str]:
-    """Get the user_id for the current request (from context, set by auth middleware)."""
+    """user_id for this request (context; set by auth middleware)."""
     return _current_user_id.get()
 
 

@@ -1577,7 +1577,7 @@ def install_skill_from_hub(
     version: str = "",
     enable: bool = False,
     overwrite: bool = False,
-    user_id: str | None = None,
+    _user_id: str | None = None,
     target_name: str | None = None,
     cancel_checker: Any | None = None,
 ) -> HubInstallResult:
@@ -1638,7 +1638,6 @@ def import_pool_skill_from_hub(
     bundle_url: str,
     version: str = "",
     target_name: str | None = None,
-    user_id: str | None = None,
 ) -> HubInstallResult:
     if not bundle_url or not _is_http_url(bundle_url):
         raise ValueError("bundle_url must be a valid http(s) URL")
@@ -1660,7 +1659,6 @@ def import_pool_skill_from_hub(
         references=references,
         scripts=scripts,
         extra_files=extra_files,
-        user_id=user_id,
     )
     if not created:
         raise SkillConflictError(

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Authentication: optional CoPaw local login + LCAgent JWT for tenant isolation.
+"""Authentication: optional CoPaw login + LCAgent JWT for tenant isolation.
 
 When ``LAZY_PLATFORM_KEY`` is set, HS256 JWT from the LCAgent ``Authorization``
 header is verified and ``user_id`` is extracted for per-user storage isolation.
@@ -19,7 +19,7 @@ import time
 from typing import Optional
 
 import jwt
-from fastapi import Depends, HTTPException, Request, Response
+from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..constant import SECRET_DIR
@@ -364,14 +364,15 @@ def verify_lcagent_token(token: str) -> Optional[str]:
         uid = payload.get("user_id")
         if uid is None:
             return None
-        # LCAgent Passport uses numeric account.id; pathlib rejects Path / int → 500 on config APIs.
+        # LCAgent Passport uses numeric account.id; pathlib rejects Path / int
+        # → 500 on config APIs.
         return str(uid)
     except Exception:
         return None
 
 
 def get_current_user_id(request: Request) -> Optional[str]:
-    """FastAPI dependency: ``user_id`` from JWT when ``LAZY_PLATFORM_KEY`` is set."""
+    """Dependency: ``user_id`` from JWT when ``LAZY_PLATFORM_KEY`` is set."""
     key = _get_platform_key()
     if not key:
         return None
@@ -384,7 +385,7 @@ def get_current_user_id(request: Request) -> Optional[str]:
 
 
 def get_current_user_id_required(request: Request) -> str:
-    """Require valid LCAgent JWT when isolation is enabled; else empty string."""
+    """Require valid LCAgent JWT when isolation is on; else empty string."""
     key = _get_platform_key()
     if not key:
         return ""
@@ -406,7 +407,7 @@ def get_current_user_id_required(request: Request) -> str:
 
 
 class UserIdContextMiddleware(BaseHTTPMiddleware):
-    """Set ``user_id`` from LCAgent JWT in context for the request lifecycle."""
+    """Set ``user_id`` from LCAgent JWT for the request lifecycle."""
 
     async def dispatch(self, request, call_next):
         from ..context import reset_current_user_id, set_current_user_id
@@ -424,7 +425,7 @@ class UserIdContextMiddleware(BaseHTTPMiddleware):
 
 
 class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
-    """Inject ``user_id`` from JWT into ``POST .../api/agent/.../process`` body."""
+    """Inject ``user_id`` from JWT into POST .../api/agent/.../process body."""
 
     async def dispatch(self, request, call_next):
         if (
@@ -455,7 +456,8 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         has_auth = bool((request.headers.get("Authorization") or "").strip())
         if not key:
             logger.info(
-                "agent/process: LAZY_PLATFORM_KEY not set, skip JWT inject (has_auth=%s)",
+                "agent/process: LAZY_PLATFORM_KEY not set, "
+                "skip JWT inject (has_auth=%s)",
                 has_auth,
             )
 
@@ -472,9 +474,12 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
                 reset_process_request_meta()
                 reset_request_authorization()
 
-        user_id = verify_lcagent_token(request.headers.get("Authorization", ""))
+        user_id = verify_lcagent_token(
+            request.headers.get("Authorization", "")
+        )
         logger.info(
-            "agent/process: has_key=True has_auth=%s resolved_user_id=%s body_user_id=%s",
+            "agent/process: has_key=True has_auth=%s "
+            "resolved_user_id=%s body_user_id=%s",
             has_auth,
             user_id or "(none)",
             data.get("user_id", "(missing)"),
@@ -517,7 +522,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next,
     ) -> Response:
-        """Check Bearer token on protected API routes; skip public paths."""
+        """Check Bearer token on protected routes; skip public paths."""
         if self._should_skip_auth(request):
             return await call_next(request)
 

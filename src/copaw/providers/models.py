@@ -22,5 +22,7 @@ class ResolvedModelConfig(BaseModel):
     is_local: bool = Field(default=False)
     chat_model_name: Optional[str] = Field(
         default=None,
-        description="When set, use this chat model class name (e.g. OpenAIChatModel).",
+        description=(
+            "When set, use this chat model class name (e.g. OpenAIChatModel)."
+        ),
     )

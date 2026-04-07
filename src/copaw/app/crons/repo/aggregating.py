@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Aggregate cron jobs from legacy WORKING_DIR/jobs.json and users/*/jobs.json."""
+"""Aggregate cron jobs from legacy jobs.json and per-user jobs.json."""
 from __future__ import annotations
 
 import json
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class AggregatingJobRepository(BaseJobRepository):
-    """Merge jobs from root jobs.json (legacy) and every ``users/*/jobs.json``."""
+    """Merge legacy root jobs.json and every ``users/*/jobs.json``."""
 
     META_OWNER_KEY = "_copaw_user_id"
 
@@ -86,7 +86,7 @@ class AggregatingJobRepository(BaseJobRepository):
         canonical = path.resolve()
         repo = JsonJobRepository(path)
         await repo.upsert_job(spec)
-        # load() merges legacy-first; drop same id elsewhere so legacy cannot shadow.
+        # load() merges legacy-first; drop same id elsewhere (no shadow).
         for other in self._all_job_file_paths():
             if other.resolve() == canonical:
                 continue

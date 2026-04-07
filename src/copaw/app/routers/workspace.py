@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Workspace API – download / upload workspace as a zip (global or per-user)."""
+"""Workspace API: download / upload workspace zip (global or per-user)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,20 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import StreamingResponse
 
-from ...config.utils import copaw_storage_isolation_enabled, get_user_working_dir
+from ...config.utils import (
+    copaw_storage_isolation_enabled,
+    get_user_working_dir,
+)
 from ...constant import WORKING_DIR
 from ..auth import get_current_user_id_required
 from ..agent_context import get_agent_for_request

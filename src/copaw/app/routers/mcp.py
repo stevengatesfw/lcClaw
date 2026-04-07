@@ -6,7 +6,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Optional, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path as PathParam,
+    Request,
+)
 from pydantic import BaseModel, Field
 
 from ..utils import schedule_agent_reload
@@ -249,7 +256,7 @@ async def list_mcp_clients(
 )
 async def get_mcp_client(
     request: Request,
-    client_key: str = Path(...),
+    client_key: str = PathParam(...),
     config_path: Path = Depends(get_storage_config_path),
 ) -> MCPClientInfo:
     """Get details of a specific MCP client."""
@@ -338,7 +345,7 @@ async def create_mcp_client(
 )
 async def update_mcp_client(
     request: Request,
-    client_key: str = Path(...),
+    client_key: str = PathParam(...),
     updates: MCPClientUpdateRequest = Body(...),
     config_path: Path = Depends(get_storage_config_path),
     uid: str = Depends(get_current_user_id_required),
@@ -356,7 +363,10 @@ async def update_mcp_client(
         existing = config.mcp.clients[client_key]
     else:
         agent = await get_agent_for_request(request)
-        if agent.config.mcp is None or client_key not in agent.config.mcp.clients:
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
             raise HTTPException(
                 404,
                 detail=f"MCP client '{client_key}' not found",
@@ -400,7 +410,7 @@ async def update_mcp_client(
 )
 async def toggle_mcp_client(
     request: Request,
-    client_key: str = Path(...),
+    client_key: str = PathParam(...),
     config_path: Path = Depends(get_storage_config_path),
     uid: str = Depends(get_current_user_id_required),
 ) -> MCPClientInfo:
@@ -417,7 +427,10 @@ async def toggle_mcp_client(
         client = config.mcp.clients[client_key]
     else:
         agent = await get_agent_for_request(request)
-        if agent.config.mcp is None or client_key not in agent.config.mcp.clients:
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
             raise HTTPException(
                 404,
                 detail=f"MCP client '{client_key}' not found",
@@ -443,7 +456,7 @@ async def toggle_mcp_client(
 )
 async def delete_mcp_client(
     request: Request,
-    client_key: str = Path(...),
+    client_key: str = PathParam(...),
     config_path: Path = Depends(get_storage_config_path),
     uid: str = Depends(get_current_user_id_required),
 ) -> Dict[str, str]:
@@ -462,7 +475,10 @@ async def delete_mcp_client(
         await _invalidate_mcp_runner(request, uid)
     else:
         agent = await get_agent_for_request(request)
-        if agent.config.mcp is None or client_key not in agent.config.mcp.clients:
+        if (
+            agent.config.mcp is None
+            or client_key not in agent.config.mcp.clients
+        ):
             raise HTTPException(
                 404,
                 detail=f"MCP client '{client_key}' not found",

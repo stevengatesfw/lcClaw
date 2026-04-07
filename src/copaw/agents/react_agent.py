@@ -284,7 +284,8 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                 and not enable_agent_mode
             ):
                 logger.debug(
-                    "Skipped published-app tool because agent capability is disabled",
+                    "Skipped published-app tool because agent capability is "
+                    "disabled",
                 )
                 continue
 
@@ -454,7 +455,8 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
     def _register_hooks(self) -> None:
         """Register pre-reasoning and pre-acting hooks."""
         # Bootstrap hook - checks BOOTSTRAP.md on first interaction
-        # Prefer request-scoped working dir (LCAgent user isolation) over workspace
+        # Prefer request-scoped working dir (LCAgent user isolation) over
+        # workspace
         bootstrap_hook = BootstrapHook(
             working_dir=get_current_working_dir(),
             language=self._language,

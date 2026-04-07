@@ -37,7 +37,7 @@ async def get_cron_manager(
 @router.get("/jobs", response_model=list[CronJobSpec])
 async def list_jobs(
     mgr: CronManager = Depends(get_cron_manager),
-    uid: str = Depends(get_current_user_id_required),
+    _uid: str = Depends(get_current_user_id_required),
     jobs_path: Path = Depends(get_storage_jobs_path),
 ):
     if copaw_storage_isolation_enabled():

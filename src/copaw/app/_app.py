@@ -301,7 +301,8 @@ app = FastAPI(
     openapi_url="/openapi.json" if DOCS_ENABLED else None,
 )
 
-# Outermost first: auth → agent routing → LCAgent JWT context → /api/agent/process body inject
+# Outermost first: auth → agent routing → LCAgent JWT →
+# /api/agent/process body inject
 app.add_middleware(AuthMiddleware)
 app.add_middleware(AgentContextMiddleware)
 app.add_middleware(UserIdContextMiddleware)
@@ -324,7 +325,7 @@ if CORS_ORIGINS:
 _CONSOLE_STATIC_ENV = "COPAW_CONSOLE_STATIC_DIR"
 
 
-def _resolve_console_static_dir() -> str:
+def _resolve_console_static_dir() -> str:  # pylint: disable=too-many-return-statements
     env_dir = os.environ.get(_CONSOLE_STATIC_ENV)
     if env_dir:
         candidate = Path(env_dir)

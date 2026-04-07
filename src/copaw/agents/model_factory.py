@@ -701,7 +701,8 @@ def create_model_and_formatter(
     Args:
         agent_id: Optional agent ID to load agent-specific model config.
             If None, tries to get from context, then falls back to global.
-        llm_cfg: LCAgent ``meta.lcagent_resolved_llm`` override; wins over *agent_id*.
+        llm_cfg: LCAgent ``meta.lcagent_resolved_llm`` override; wins over
+            *agent_id*.
 
     Returns:
         Tuple of (model_instance, formatter_instance)
