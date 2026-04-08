@@ -17,6 +17,33 @@ export interface ChatUploadResponse {
 
 const FILES_PREVIEW = "/files/preview";
 
+/** 仅保留 FastAPI 路由 `{filepath:path}` 一段，去掉误传的完整 API 路径前缀。 */
+function normalizePreviewFilePath(filename: string): string {
+  let s = filename.trim();
+  const q = s.indexOf("?");
+  if (q !== -1) s = s.slice(0, q);
+  const h = s.indexOf("#");
+  if (h !== -1) s = s.slice(0, h);
+  s = s.replace(/^\/+/, "");
+  const prefixes = [
+    "copaw/api/files/preview/",
+    "api/files/preview/",
+    "files/preview/",
+  ];
+  for (let i = 0; i < 8; i++) {
+    let stripped = false;
+    for (const p of prefixes) {
+      if (s.startsWith(p)) {
+        s = s.slice(p.length);
+        stripped = true;
+        break;
+      }
+    }
+    if (!stripped) break;
+  }
+  return s;
+}
+
 export const chatApi = {
   /** Upload a file for chat attachment. Returns URL path for content. */
   uploadFile: async (file: File): Promise<ChatUploadResponse> => {
@@ -42,7 +69,9 @@ export const chatApi = {
     if (!filename) return "";
     if (filename.startsWith("http://") || filename.startsWith("https://"))
       return filename;
-    const path = `${FILES_PREVIEW}/${filename.replace(/^\/+/, "")}`;
+    const tail = normalizePreviewFilePath(filename);
+    if (!tail) return "";
+    const path = `${FILES_PREVIEW}/${tail}`;
     const url = getApiUrl(path);
 
     const token = getApiToken();
