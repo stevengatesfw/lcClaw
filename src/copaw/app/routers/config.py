@@ -31,6 +31,7 @@ from ...config.utils import (
 )
 from ..channels.registry import BUILTIN_CHANNEL_KEYS
 from ...config.config import (
+    AgentsDefaultsConfig,
     AgentsLLMRoutingConfig,
     ConsoleConfig,
     DingTalkConfig,
@@ -426,7 +427,10 @@ async def put_heartbeat(
     )
     if copaw_storage_isolation_enabled():
         config = load_config(config_path)
-        config.agents.defaults.heartbeat = hb
+        if config.agents.defaults is None:
+            config.agents.defaults = AgentsDefaultsConfig(heartbeat=hb)
+        else:
+            config.agents.defaults.heartbeat = hb
         save_config(config, config_path)
 
         cron_manager = getattr(request.app.state, "cron_manager", None)

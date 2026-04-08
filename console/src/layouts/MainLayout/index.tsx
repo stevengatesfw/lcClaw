@@ -1,7 +1,6 @@
 import { Layout } from "antd";
 import { Routes, Route, useLocation, Navigate } from "react-router-dom";
 import Sidebar from "../Sidebar";
-import Header from "../Header";
 import ConsoleCronBubble from "../../components/ConsoleCronBubble";
 import styles from "../index.module.less";
 import Chat from "../../pages/Chat";
@@ -71,7 +70,6 @@ export default function MainLayout() {
 
   return (
     <Layout className={styles.mainLayout}>
-      <Header />
       <Layout>
         <Sidebar selectedKey={selectedKey} />
         <Content className="page-container">
