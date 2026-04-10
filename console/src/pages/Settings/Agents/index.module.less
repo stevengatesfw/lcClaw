@@ -3,20 +3,38 @@
   padding: 0;
 
   :global {
-    .copaw-card-body {
+    .copaw-card-body,
+    .lcClaw-card-body,
+    .ant-card-body {
       padding: 0 !important;
     }
 
-    .copaw-table-wrapper .copaw-table-container .copaw-table-thead > tr > th {
+    .copaw-table-wrapper .copaw-table-container .copaw-table-thead > tr > th,
+    .lcClaw-table-wrapper .lcClaw-table-container .lcClaw-table-thead > tr > th,
+    .ant-table-wrapper .ant-table-container .ant-table-thead > tr > th {
       background: #f9f8f4 !important;
     }
 
-    .copaw-table-cell {
+    .copaw-table-cell,
+    .lcClaw-table-cell,
+    .ant-table-cell {
       padding: 8px 16px !important;
     }
 
     .copaw-table-wrapper
       .copaw-table-container
+      table
+      > thead
+      > tr:first-child
+      > *:last-child,
+    .lcClaw-table-wrapper
+      .lcClaw-table-container
+      table
+      > thead
+      > tr:first-child
+      > *:last-child,
+    .ant-table-wrapper
+      .ant-table-container
       table
       > thead
       > tr:first-child
@@ -99,7 +117,9 @@
     margin-bottom: 0;
   }
 
-  :global(.ant-card-body) {
+  :global(.ant-card-body),
+  :global(.lcClaw-card-body),
+  :global(.copaw-card-body) {
     padding: 0;
   }
 }
