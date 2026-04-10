@@ -150,6 +150,19 @@ class ChatManager:
             await self._repo.upsert_chat(spec)
             return spec
 
+    async def update_chat(self, spec: ChatSpec) -> ChatSpec:
+        """Persist a chat spec after a turn (runner ``finally`` / tenant router).
+
+        Refreshes ``updated_at`` and upserts; used by
+        :class:`TenantRoutingChatManager` and direct :class:`ChatManager`.
+        """
+        async with self._lock:
+            merged = spec.model_copy(
+                update={"updated_at": datetime.now(timezone.utc)},
+            )
+            await self._repo.upsert_chat(merged)
+            return merged
+
     async def patch_chat(
         self,
         chat_id: str,

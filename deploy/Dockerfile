@@ -8,8 +8,15 @@ RUN cd /app/console && npm ci --include=dev && npm run build
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime image with Python, Chromium, and app.
-# -----------------------------------------------------------------------------
-FROM agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/node:slim
+# 国内临时拉 Python 基础镜像（不改 Docker daemon）二选一：
+# 1) 构建时走镜像代理（推荐，一条命令即可）：
+#    docker build --build-arg PYTHON_RUNTIME_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm ...
+# 2) 宿主机先拉再打 tag，再使用默认 FROM 构建：
+#    docker pull docker.m.daocloud.io/library/python:3.11-slim-bookworm
+#    docker tag docker.m.daocloud.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
+# 固定 CPython 3.11 + glibc（bookworm），避免 onnxruntime 在部分 node:slim 环境无 wheel。
+ARG PYTHON_RUNTIME_IMAGE=python:3.11-slim-bookworm
+FROM ${PYTHON_RUNTIME_IMAGE}
 
 # ENV variables
 ENV NODE_ENV=production
@@ -41,9 +48,6 @@ RUN set -eux; \
 
 RUN apt-get update && apt-get install -y --fix-missing \
     curl  \
-    python3  \
-    python3-pip  \
-    python3-venv \
     build-essential  \
     libssl-dev  \
     git  \

@@ -244,7 +244,7 @@ class MCPToolInfo(BaseModel):
 )
 async def list_mcp_tools(
     request: Request,
-    client_key: str = Path(...),
+    client_key: str = PathParam(...),
 ) -> List[MCPToolInfo]:
     """Query a running MCP server for its available tools.
 

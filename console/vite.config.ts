@@ -7,8 +7,19 @@ export default defineConfig(({ mode }) => {
   // Empty = same-origin; frontend and backend served together, no hardcoded host.
   // Use a dedicated Vite-prefixed key so unrelated shell BASE_URL values don't leak into the build.
   const apiBaseUrl = env.VITE_API_BASE_URL ?? "";
+  // Must match where Nginx exposes the console (see docker/k8s/yaml/nginx.yaml: /copaw/).
+  // Without this, built chunks request /assets/* and hit the wrong upstream (404). Set VITE_BASE=/ for root-served builds.
+  const viteBase = env.VITE_BASE?.trim();
+  const appBase = viteBase
+    ? viteBase === "/"
+      ? "/"
+      : `${viteBase.replace(/\/$/, "")}/`
+    : mode === "production"
+      ? "/copaw/"
+      : "/";
 
   return {
+    base: appBase,
     define: {
       VITE_API_BASE_URL: JSON.stringify(apiBaseUrl),
       TOKEN: JSON.stringify(env.TOKEN || ""),

@@ -23,11 +23,13 @@ html.dark-mode body {
 
 /* Ant Design layout background in dark mode */
 html.dark-mode .ant-layout,
+html.dark-mode .lcClaw-layout,
 html.dark-mode .copaw-layout {
   background: #141414 !important;
 }
 
 html.dark-mode .ant-layout-content,
+html.dark-mode .lcClaw-layout-content,
 html.dark-mode .copaw-layout-content {
   background: #141414 !important;
 }
@@ -40,21 +42,24 @@ html.dark-mode .page-content {
 
 /* Card components — @agentscope-ai/design uses copaw prefix */
 html.dark-mode .copaw-card,
-html.dark-mode .ant-card {
+html.dark-mode .ant-card,
+html.dark-mode .lcClaw-card {
   background: #1f1f1f !important;
   border-color: rgba(255, 255, 255, 0.1) !important;
   color: rgba(255, 255, 255, 0.85) !important;
 }
 
 html.dark-mode .copaw-card-head,
-html.dark-mode .ant-card-head {
+html.dark-mode .ant-card-head,
+html.dark-mode .lcClaw-card-head {
   background: #1f1f1f !important;
   border-bottom-color: rgba(255, 255, 255, 0.08) !important;
   color: rgba(255, 255, 255, 0.85) !important;
 }
 
 html.dark-mode .copaw-card-head-title,
-html.dark-mode .ant-card-head-title {
+html.dark-mode .ant-card-head-title,
+html.dark-mode .lcClaw-card-head-title {
   color: rgba(255, 255, 255, 0.85) !important;
 }
 
@@ -70,7 +75,8 @@ html.dark-mode .copaw-spark-info {
 }
 
 html.dark-mode .copaw-card-body,
-html.dark-mode .ant-card-body {
+html.dark-mode .ant-card-body,
+html.dark-mode .lcClaw-card-body {
   background: #1f1f1f !important;
 }
 
@@ -788,14 +794,16 @@ html.dark-mode [class*="chat-anywhere"] [class*="message"] a {
   overflow: hidden;
 }
 
-.ant-layout {
+.ant-layout,
+.lcClaw-layout {
   min-height: 100vh;
   max-height: 100vh;
   overflow: hidden;
   background: #f9f8f4;
 }
 
-.ant-layout-content {
+.ant-layout-content,
+.lcClaw-layout-content {
   overflow: hidden;
   background: #f9f8f4;
 }
@@ -838,26 +846,30 @@ html.dark-mode .copaw-sender-content {
 
 /* Menu background in light mode */
 .copaw-menu,
-.ant-menu {
+.ant-menu,
+.lcClaw-menu {
   background: #f9f8f4 !important;
 }
 
 /* Menu selected item in light mode */
 .copaw-menu-item-selected,
-.ant-menu-item-selected {
+.ant-menu-item-selected,
+.lcClaw-menu-item-selected {
   background: rgba(43, 18, 0, 0.08) !important;
   color: inherit !important;
 }
 
 /* Hide submenu arrow in light mode */
 .copaw-menu-submenu-arrow,
-.ant-menu-submenu-arrow {
+.ant-menu-submenu-arrow,
+.lcClaw-menu-submenu-arrow {
   display: none !important;
 }
 
 /* Group title (一级菜单) in light mode */
 .copaw-menu-submenu-title,
-.ant-menu-submenu-title {
+.ant-menu-submenu-title,
+.lcClaw-menu-submenu-title {
   font-family: "PingFang SC", sans-serif !important;
   font-size: 12px !important;
   font-weight: 500 !important;
@@ -868,13 +880,15 @@ html.dark-mode .copaw-sender-content {
 
 /* Remove submenu indent - align with parent in light mode */
 .copaw-menu-submenu .copaw-menu-item,
-.ant-menu-submenu .ant-menu-item {
+.ant-menu-submenu .ant-menu-item,
+.lcClaw-menu-submenu .lcClaw-menu-item {
   padding-left: 12px !important;
 }
 
 /* Selected submenu item - keep text color unchanged in light mode */
 .copaw-menu-submenu .copaw-menu-item-selected,
-.ant-menu-submenu .ant-menu-item-selected {
+.ant-menu-submenu .ant-menu-item-selected,
+.lcClaw-menu-submenu .lcClaw-menu-item-selected {
   color: inherit !important;
 }
 
@@ -916,7 +930,8 @@ html.dark-mode .copaw-sender-content {
   height: 100%;
 } */
 
-.ant-card-body {
+.ant-card-body,
+.lcClaw-card-body {
   height: 100%;
   padding: 0;
 }

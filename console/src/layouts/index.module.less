@@ -105,7 +105,9 @@
     :global {
       /* Center icon in collapsed menu items */
       .copaw-menu-item,
-      .copaw-menu-submenu .copaw-menu-item {
+      .copaw-menu-submenu .copaw-menu-item,
+      .lcClaw-menu-item,
+      .lcClaw-menu-submenu .lcClaw-menu-item {
         padding-left: 0 !important;
         padding-right: 0 !important;
         display: flex !important;
@@ -116,25 +118,31 @@
       /* Hide label text in collapsed mode */
       .copaw-menu-title-content,
       .copaw-menu-item > span:not([role]),
-      .copaw-menu-item-only-child > span {
+      .copaw-menu-item-only-child > span,
+      .lcClaw-menu-title-content,
+      .lcClaw-menu-item > span:not([role]),
+      .lcClaw-menu-item-only-child > span {
         display: none !important;
       }
 
       /* Hide group labels */
-      .copaw-menu-submenu-title {
+      .copaw-menu-submenu-title,
+      .lcClaw-menu-submenu-title {
         display: none !important;
       }
     }
   }
 
   :global {
-    .copaw-menu {
+    .copaw-menu,
+    .lcClaw-menu {
       background: #f9f8f4 !important;
       border-inline-end: 0 !important;
     }
 
     /* Group title (一级菜单分组) */
-    .copaw-menu-submenu-title {
+    .copaw-menu-submenu-title,
+    .lcClaw-menu-submenu-title {
       font-family: "PingFang SC", sans-serif !important;
       font-size: 12px !important;
       font-weight: 500 !important;
@@ -151,43 +159,51 @@
     }
 
     /* Hide submenu arrow */
-    .copaw-menu-submenu-arrow {
+    .copaw-menu-submenu-arrow,
+    .lcClaw-menu-submenu-arrow {
       display: none !important;
     }
 
     /* Always expand submenus */
-    .copaw-menu-submenu {
-      > .copaw-menu {
+    .copaw-menu-submenu,
+    .lcClaw-menu-submenu {
+      > .copaw-menu,
+      > .lcClaw-menu {
         display: block !important;
       }
     }
 
     /* Menu item padding - align all items */
-    .copaw-menu-item {
+    .copaw-menu-item,
+    .lcClaw-menu-item {
       padding-left: 8px !important;
     }
 
     /* Remove submenu indent - align with parent */
-    .copaw-menu-submenu .copaw-menu-item {
+    .copaw-menu-submenu .copaw-menu-item,
+    .lcClaw-menu-submenu .lcClaw-menu-item {
       padding-left: 8px !important;
     }
 
     /* Selected item */
-    .copaw-menu-item-selected {
+    .copaw-menu-item-selected,
+    .lcClaw-menu-item-selected {
       background: rgba(43, 18, 0, 0.08) !important;
       color: inherit !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
 
-      .copaw-menu-title-content {
+      .copaw-menu-title-content,
+      .lcClaw-menu-title-content {
         display: flex !important;
         align-items: center !important;
       }
     }
 
     /* Selected submenu item - keep text color unchanged */
-    .copaw-menu-submenu .copaw-menu-item-selected {
+    .copaw-menu-submenu .copaw-menu-item-selected,
+    .lcClaw-menu-submenu .lcClaw-menu-item-selected {
       color: inherit !important;
     }
   }
@@ -203,13 +219,15 @@
   }
 
   :global {
-    .copaw-menu {
+    .copaw-menu,
+    .lcClaw-menu {
       background: #1a1a1a !important;
       border-inline-end: 0 !important;
     }
 
     /* Group title (sub-menu label) */
-    .copaw-menu-submenu-title {
+    .copaw-menu-submenu-title,
+    .lcClaw-menu-submenu-title {
       color: rgba(255, 255, 255, 0.45) !important;
 
       /* No hover effect for group titles in dark mode */
@@ -220,18 +238,21 @@
     }
 
     /* Regular menu item */
-    .copaw-menu-item {
+    .copaw-menu-item,
+    .lcClaw-menu-item {
       color: rgba(255, 255, 255, 0.75) !important;
     }
 
     /* Hover state - only for menu items, not group titles */
-    .copaw-menu-item:hover {
+    .copaw-menu-item:hover,
+    .lcClaw-menu-item:hover {
       background: rgba(255, 255, 255, 0.1) !important;
       color: rgba(255, 255, 255, 0.95) !important;
     }
 
     /* Selected item */
-    .copaw-menu-item-selected {
+    .copaw-menu-item-selected,
+    .lcClaw-menu-item-selected {
       background: rgba(255, 127, 22, 0.5) !important;
       color: #ff7f16 !important;
     }
