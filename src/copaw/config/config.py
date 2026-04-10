@@ -924,7 +924,10 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
         "send_file_to_user": BuiltinToolConfig(
             name="send_file_to_user",
             enabled=True,
-            description="Send files to user",
+            description=(
+                "Send files to user: local path, http(s) URL, or LCAgent paths "
+                "/app/upload/… /tmp/… when using LCAgent CoPaw proxy"
+            ),
         ),
         "get_current_time": BuiltinToolConfig(
             name="get_current_time",
@@ -1112,6 +1115,11 @@ def load_agent_config(
 ) -> AgentProfileConfig:
     """Load agent's complete configuration from workspace/agent.json.
 
+    When storage isolation is enabled and ``config_path`` points at a
+    per-tenant root (``users/<uid>/config.json``), the ``channels`` section
+    from that file replaces any channel settings read from shared
+    ``workspace/.../agent.json`` so credentials are tenant-scoped.
+
     Args:
         agent_id: Agent ID to load
         config_path: Root ``config.json`` (default: global ``get_config_path()``).
@@ -1194,7 +1202,17 @@ def load_agent_config(
     except Exception:
         pass
 
-    return AgentProfileConfig(**data)
+    profile = AgentProfileConfig(**data)
+    # Per-tenant channel credentials (DingTalk, etc.): users/<uid>/config.json
+    # is authoritative over shared workspace agent.json when isolated.
+    from .utils import copaw_storage_isolation_enabled, is_tenant_storage_config_path
+
+    if copaw_storage_isolation_enabled() and is_tenant_storage_config_path(
+        config_path,
+    ):
+        profile.channels = config.channels.model_copy(deep=True)
+
+    return profile
 
 
 def save_agent_config(

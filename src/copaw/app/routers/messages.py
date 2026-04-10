@@ -117,7 +117,9 @@ async def send_message(
     multi_agent_manager = _get_multi_agent_manager(http_request)
 
     config_path = get_request_config_path(http_request)
-    ensure_tenant_default_agent(config_path)
+    config_saved = ensure_tenant_default_agent(config_path)
+    if config_saved:
+        await multi_agent_manager.reload_agent("default", config_path=config_path)
 
     # Get workspace for the agent
     try:

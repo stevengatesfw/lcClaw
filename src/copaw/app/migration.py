@@ -5,6 +5,7 @@ Handles migration from legacy single-agent config to new multi-agent structure.
 """
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -26,7 +27,13 @@ from ..constant import (
     BUILTIN_QA_AGENT_SKILL_NAMES,
     WORKING_DIR,
 )
-from ..config.utils import get_config_path, load_config, save_config
+from ..config.utils import (
+    copaw_storage_isolation_enabled,
+    get_config_path,
+    is_tenant_storage_config_path,
+    load_config,
+    save_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -615,6 +622,58 @@ def _ensure_workspace_json_files(
                 logger.debug("Created %s for %s", filename, label)
 
 
+def _normalize_tenant_default_workspace_dir(config, config_path: Path) -> bool:
+    """If tenant default points at global ``WORKING_DIR/workspaces/default``, repoint.
+
+    Returns True if ``config.json`` was saved.
+    """
+    if not copaw_storage_isolation_enabled():
+        return False
+    if not is_tenant_storage_config_path(config_path):
+        return False
+    if "default" not in config.agents.profiles:
+        return False
+
+    ref = config.agents.profiles["default"]
+    current = Path(ref.workspace_dir).expanduser()
+    global_default = (WORKING_DIR / "workspaces" / "default").expanduser()
+    try:
+        cur_res = current.resolve()
+        glob_res = global_default.resolve()
+    except OSError:
+        cur_res = current
+        glob_res = global_default
+
+    if os.path.normcase(str(cur_res)) != os.path.normcase(str(glob_res)):
+        return False
+
+    expected = (config_path.parent / "workspaces" / "default").expanduser()
+    try:
+        ref.workspace_dir = str(expected.resolve())
+    except OSError:
+        ref.workspace_dir = str(expected)
+
+    save_config(config, config_path)
+    logger.info(
+        "Normalized tenant default workspace_dir to %s (was global default)",
+        ref.workspace_dir,
+    )
+    return True
+
+
+def _maybe_seed_agent_json_from_global(tenant_workspace: Path) -> None:
+    """Copy ``agent.json`` from global default if tenant workspace has none."""
+    dest = tenant_workspace / "agent.json"
+    if dest.exists():
+        return
+    src = WORKING_DIR / "workspaces" / "default" / "agent.json"
+    if not src.is_file():
+        return
+    tenant_workspace.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    logger.info("Seeded tenant agent.json from global default: %s", dest)
+
+
 def ensure_default_agent_exists() -> None:
     """Ensure that the default agent exists in config.
 
@@ -635,9 +694,14 @@ def ensure_default_agent_exists() -> None:
 def _do_ensure_default_agent_at(
     config_path: Path,
     workspace_root: Path,
-) -> None:
-    """Ensure default profile + workspace under *workspace_root*."""
+) -> bool:
+    """Ensure default profile + workspace under *workspace_root*.
+
+    Returns:
+        True if ``config.json`` was saved (tenant normalize or new default profile).
+    """
     config = load_config(config_path)
+    saved = _normalize_tenant_default_workspace_dir(config, config_path)
 
     if "default" in config.agents.profiles:
         agent_ref = config.agents.profiles["default"]
@@ -646,6 +710,9 @@ def _do_ensure_default_agent_at(
     else:
         default_workspace = (workspace_root / "workspaces" / "default").expanduser()
         agent_existed = False
+
+    if saved:
+        _maybe_seed_agent_json_from_global(default_workspace)
 
     default_workspace.mkdir(parents=True, exist_ok=True)
 
@@ -667,6 +734,9 @@ def _do_ensure_default_agent_at(
             "Created default agent with workspace: %s",
             default_workspace,
         )
+        return True
+
+    return saved
 
 
 def _do_ensure_default_agent() -> None:
@@ -674,10 +744,14 @@ def _do_ensure_default_agent() -> None:
     _do_ensure_default_agent_at(get_config_path(), WORKING_DIR)
 
 
-def ensure_tenant_default_agent(config_path: Path) -> None:
-    """First-visit seed: default agent under ``config_path.parent`` (e.g. users/uid)."""
+def ensure_tenant_default_agent(config_path: Path) -> bool:
+    """First-visit seed: default agent under ``config_path.parent`` (e.g. users/uid).
+
+    Returns:
+        True if ``config.json`` was saved (path normalized or default profile created).
+    """
     try:
-        _do_ensure_default_agent_at(config_path, config_path.parent)
+        return _do_ensure_default_agent_at(config_path, config_path.parent)
     except Exception as e:
         logger.error(
             "Failed to ensure default agent for %s: %s",
@@ -685,6 +759,7 @@ def ensure_tenant_default_agent(config_path: Path) -> None:
             e,
             exc_info=True,
         )
+        return False
 
 
 def _other_agent_owns_workspace(

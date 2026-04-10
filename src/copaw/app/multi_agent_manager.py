@@ -88,6 +88,7 @@ class MultiAgentManager:
             instance = Workspace(
                 agent_id=agent_id,
                 workspace_dir=agent_ref.workspace_dir,
+                root_config_path=config_path,
             )
 
             try:
@@ -290,6 +291,7 @@ class MultiAgentManager:
         new_instance = Workspace(
             agent_id=agent_id,
             workspace_dir=agent_ref.workspace_dir,
+            root_config_path=config_path,
         )
 
         # Step 3.5: Set reusable components from old instance (if any)

@@ -26,6 +26,19 @@ ENV COPAW_ENABLED_CHANNELS=${COPAW_ENABLED_CHANNELS}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# If apt cannot reach deb.debian.org (e.g. blocked CDN), use a Debian mirror at build time:
+#   docker build --build-arg APT_USE_MIRROR=1 -f deploy/Dockerfile ...
+# Optional: --build-arg APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
+ARG APT_USE_MIRROR=0
+ARG APT_MIRROR_HOST=mirrors.aliyun.com
+RUN set -eux; \
+  if [ "$APT_USE_MIRROR" = "1" ]; then \
+    find /etc/apt -type f \( -name "debian.sources" -o -name "*.sources" -o -name "*.list" -o -name "sources.list" \) | while read -r f; do \
+      sed -i "s/deb.debian.org/${APT_MIRROR_HOST}/g" "$f"; \
+      sed -i "s/security.debian.org/${APT_MIRROR_HOST}/g" "$f"; \
+    done; \
+  fi
+
 RUN apt-get update && apt-get install -y --fix-missing \
     curl  \
     python3  \

@@ -322,7 +322,9 @@ def build_bootstrap_guidance(
 def _get_active_model_info():
     """Resolve the active model's ModelInfo and model name.
 
-    Tries agent-specific model first, then falls back to global.
+    When the request uses LCAgent-resolved LLM (``meta.lcagent_resolved_llm``),
+    prefer that model id so multimodal hints match chat. Otherwise tries
+    agent-specific model, then global active model.
 
     Returns:
         A ``(ModelInfo, model_name)`` tuple.  Both elements are *None*
@@ -331,9 +333,24 @@ def _get_active_model_info():
     try:
         from ..app.agent_context import get_current_agent_id
         from ..config.config import load_agent_config
+        from ..context import get_process_request_meta
+        from ..providers.models import ResolvedModelConfig
         from ..providers.provider_manager import ProviderManager
 
         manager = ProviderManager.get_instance()
+
+        meta = get_process_request_meta()
+        raw_llm = meta.get("lcagent_resolved_llm")
+        if isinstance(raw_llm, dict):
+            try:
+                resolved = ResolvedModelConfig.model_validate(raw_llm)
+                mid = (resolved.model or "").strip()
+                if mid:
+                    info = manager.find_model_info_by_id(mid)
+                    if info is not None:
+                        return info, mid
+            except Exception:
+                pass
 
         # Try to get agent-specific model first
         active = None

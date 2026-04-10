@@ -120,6 +120,31 @@ export function buildModelError(): Response {
 // URL normalization utilities
 // ---------------------------------------------------------------------------
 
+/** 与 LCAgent 首页 Markdown 一致：嵌入小控制台时把绝对下载链收成相对路径，沿用当前页协议。 */
+function absolutizeConsoleDownloadToRelativeWhenEmbedded(raw: string): string {
+  if (typeof window === "undefined") return raw;
+  const pathname = window.location.pathname;
+  const embedded =
+    /^\/copaw(?:\/|$)/.test(pathname) || /^\/console(?:\/|$)/.test(pathname);
+  if (!embedded) return raw;
+  const t = raw.trim();
+  if (!t.startsWith("http://") && !t.startsWith("https://")) return raw;
+  if (!t.includes("/files/download")) return raw;
+  try {
+    const u = new URL(t);
+    if (!u.pathname.includes("/files/download")) return raw;
+    let fp = u.searchParams.get("file_path");
+    if (fp == null || fp === "") {
+      const legacy = u.searchParams.get("path");
+      if (legacy != null && legacy !== "") fp = legacy;
+    }
+    if (fp == null || fp === "") return raw;
+    return `/console/api/files/download?file_path=${encodeURIComponent(fp)}`;
+  } catch {
+    return raw;
+  }
+}
+
 /** Decode each path segment; keeps `/` delimiters (including repeated `/`). */
 function decodeUriPathSegments(path: string): string {
   return path
@@ -173,7 +198,9 @@ export function normalizeContentUrls(part: any): any {
 /** Turn a backend content URL (path or full URL) into a full URL for display. */
 export function toDisplayUrl(url: string | undefined): string {
   if (!url) return "";
-  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return absolutizeConsoleDownloadToRelativeWhenEmbedded(url);
+  }
   if (url.startsWith("file://")) url = url.replace("file://", "");
   return chatApi.filePreviewUrl(url.startsWith("/") ? url : `/${url}`);
 }

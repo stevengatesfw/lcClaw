@@ -33,6 +33,7 @@ from ..channels.registry import BUILTIN_CHANNEL_KEYS
 from ...config.config import (
     AgentsDefaultsConfig,
     AgentsLLMRoutingConfig,
+    Config,
     ConsoleConfig,
     DingTalkConfig,
     DiscordConfig,
@@ -48,6 +49,7 @@ from ...config.config import (
     TelegramConfig,
     VoiceChannelConfig,
     WecomConfig,
+    WeixinConfig,
 )
 
 from ..storage_deps import get_storage_config_path
@@ -55,6 +57,13 @@ from ..auth import get_current_user_id_required
 from .schemas_config import HeartbeatBody
 
 router = APIRouter(prefix="/config", tags=["config"])
+
+
+def _schedule_reload_active_agent(request: Request, config: Config) -> None:
+    """Hot-reload the workspace for ``active_agent`` after root config save."""
+    agent_id = config.agents.active_agent or "default"
+    if agent_id in config.agents.profiles:
+        schedule_agent_reload(request, agent_id)
 
 
 _CHANNEL_CONFIG_CLASS_MAP = {
@@ -70,6 +79,7 @@ _CHANNEL_CONFIG_CLASS_MAP = {
     "mqtt": MQTTConfig,
     "matrix": MatrixConfig,
     "wecom": WecomConfig,
+    "weixin": WeixinConfig,
 }
 
 
@@ -151,6 +161,7 @@ async def put_channels(
         config = load_config(config_path)
         config.channels = channels_config
         save_config(config, config_path)
+        _schedule_reload_active_agent(request, config)
     else:
         from ..agent_context import get_agent_for_request
         from ...config.config import save_agent_config
@@ -369,6 +380,7 @@ async def put_channel(
             config.channels = ChannelConfig()
         setattr(config.channels, channel_name, channel_config)
         save_config(config, config_path)
+        _schedule_reload_active_agent(request, config)
         return channel_config
 
     agent = await get_agent_for_request(request)

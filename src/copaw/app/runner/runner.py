@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
+import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, Optional
 
 from agentscope.message import Msg, TextBlock
@@ -21,6 +24,7 @@ from .command_dispatch import (
     _is_command,
     run_command_path,
 )
+from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
 from .query_error_dump import write_query_error_dump
 from .session import SafeJSONSession
 from .utils import build_env_context
@@ -41,6 +45,7 @@ from ...context import (
     get_process_request_meta,
     reset_current_working_dir,
     set_current_working_dir,
+    set_process_request_meta,
 )
 from ...providers.models import ResolvedModelConfig
 from ...security.tool_guard.approval import ApprovalDecision
@@ -94,22 +99,57 @@ def _meta_bool(value, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
+        s = value.strip().lower()
+        if not s:
+            return default
+        if s in {"0", "false", "no", "off"}:
+            return False
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        return default
     return default
 
 
 def _feature_flags_from_process_meta() -> tuple[bool, bool]:
     """Read lcagent feature switches from agent/process meta.
 
+    When meta is absent (e.g. DingTalk) or keys omitted, default both to True
+    so behavior matches typical LCAgent proxy sessions.
+
     Returns:
         tuple[bool, bool]: (enable_agent, enable_skills)
     """
     meta = get_process_request_meta()
-    enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=False)
+    enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=True)
     enable_skills = _meta_bool(
-        meta.get("lcagent_enable_skills"), default=False
+        meta.get("lcagent_enable_skills"), default=True
     )
     return enable_agent, enable_skills
+
+
+def _env_lcagent_console_api_base() -> str:
+    """When POST meta has no ``lcagent_console_api_base`` (e.g. DingTalk → CoPaw direct).
+
+    Same env keys as ``copaw_proxy_api._lcagent_console_api_base_for_copaw_meta``.
+    """
+    for key in ("LCAGENT_INTERNAL_CONSOLE_API_BASE", "LCAGENT_BACKEND_BASE_URL"):
+        raw = (os.environ.get(key) or "").strip().rstrip("/")
+        if raw:
+            return raw
+    return ""
+
+
+def _env_lcagent_console_public_base() -> str:
+    """Same env keys as ``copaw_proxy_api._lcagent_console_public_base`` (no request)."""
+    for key in ("LCAGENT_CONSOLE_PUBLIC_BASE", "WEB_CONSOLE_ENDPOINT"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        return raw.rstrip("/")
+    return ""
 
 
 class AgentRunner(Runner):
@@ -416,8 +456,47 @@ class AgentRunner(Runner):
         chat = None
         mgr = None
         session_state_loaded = False
+        _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
         try:
             self._request_llm_cfg_override = _llm_cfg_from_process_meta()
+            if self._request_llm_cfg_override is None:
+                self._request_llm_cfg_override = (
+                    await fetch_lcagent_home_llm_resolved_config()
+                )
+            # Mirror HTTP /process behavior: when LCAgent injects meta, tools and
+            # prompt helpers see ``lcagent_resolved_llm``. Channels and other
+            # callers without POST meta only had the override on the runner;
+            # merge so multimodal hints and meta readers match chat.
+            _meta_snapshot_for_restore = copy.deepcopy(
+                dict(get_process_request_meta()),
+            )
+            if self._request_llm_cfg_override is not None:
+                cur = dict(get_process_request_meta())
+                if not cur.get("lcagent_resolved_llm"):
+                    set_process_request_meta(
+                        {
+                            **cur,
+                            "lcagent_resolved_llm": (
+                                self._request_llm_cfg_override.model_dump(
+                                    mode="json",
+                                )
+                            ),
+                        },
+                    )
+            # Direct channels (DingTalk, etc.) skip LCAgent's /console/api/copaw/agent/process,
+            # so meta lacks lcagent_console_api_base; merge from env like the Flask proxy does.
+            cur = dict(get_process_request_meta())
+            _meta_console: dict[str, str] = {}
+            if not str(cur.get("lcagent_console_api_base") or "").strip():
+                _api = _env_lcagent_console_api_base()
+                if _api:
+                    _meta_console["lcagent_console_api_base"] = _api
+            if not str(cur.get("lcagent_console_public_base") or "").strip():
+                _pub = _env_lcagent_console_public_base()
+                if _pub:
+                    _meta_console["lcagent_console_public_base"] = _pub
+            if _meta_console:
+                set_process_request_meta({**cur, **_meta_console})
             enable_agent, enable_skills = _feature_flags_from_process_meta()
             session_id = request.session_id
             # Prefer JWT context (UserIdContextMiddleware) over body; body
@@ -567,6 +646,8 @@ class AgentRunner(Runner):
                     "  /app/upload/、/tmp/、/console/api/files/download?… 等"
                     "在 **LCAgent 后端**，**不在** CoPaw 工作目录。"
                     "勿用 read_file 等本地验证；有链接则原样给用户。\n"
+                    "  send_file_to_user 可传入上述绝对路径或完整 http(s) 下载链接；"
+                    "平台会将会话中注入的控制台地址拼成可预览的下载 URL。\n"
                 )
                 if proc_meta.get("lcagent_user_attachment_paths"):
                     env_context += (
@@ -586,7 +667,13 @@ class AgentRunner(Runner):
 
             mcp_clients = await self._get_mcp_clients_for_user(user_id)
 
-            agent_config = load_agent_config(self.agent_id)
+            _root_cp = None
+            if self._workspace is not None:
+                _root_cp = getattr(self._workspace, "_root_config_path", None)
+            agent_config = load_agent_config(
+                self.agent_id,
+                config_path=_root_cp,
+            )
             if (
                 self._request_llm_cfg_override is not None
                 or copaw_storage_isolation_enabled()
@@ -713,6 +800,8 @@ class AgentRunner(Runner):
             raise
         finally:
             self._request_llm_cfg_override = None
+            if _meta_snapshot_for_restore is not None:
+                set_process_request_meta(_meta_snapshot_for_restore)
             reset_current_working_dir()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(

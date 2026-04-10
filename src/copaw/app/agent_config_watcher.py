@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 from ..config.config import load_agent_config
-from ..config.utils import get_available_channels
+from ..config.utils import (
+    get_available_channels,
+    is_tenant_storage_config_path,
+)
 
 if TYPE_CHECKING:
     from ..config.config import ChannelConfig, HeartbeatConfig
@@ -47,6 +50,7 @@ class AgentConfigWatcher:
         cron_manager: Any = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         storage_isolation_enabled: bool = False,
+        root_config_path: Optional[Path] = None,
     ):
         """Initialize agent config watcher.
 
@@ -56,22 +60,30 @@ class AgentConfigWatcher:
             channel_manager: ChannelManager instance for this agent
             cron_manager: CronManager instance for this agent (optional)
             poll_interval: How often to check for changes (seconds)
+            root_config_path: Root ``config.json`` for :func:`load_agent_config`
+                (per-user when storage isolation is on).
         """
         self._agent_id = agent_id
         self._workspace_dir = workspace_dir
         self._config_path = workspace_dir / "agent.json"
+        self._root_config_path = root_config_path
         self._channel_manager = channel_manager
         self._cron_manager = cron_manager
         self._poll_interval = poll_interval
         self._storage_isolation = storage_isolation_enabled
         self._task: Optional[asyncio.Task] = None
+        self._watch_tenant_config = is_tenant_storage_config_path(
+            root_config_path,
+        )
 
         # Snapshot of the last known config (for diffing)
         self._last_channels: Optional[ChannelConfig] = None
         self._last_channels_hash: Optional[int] = None
         self._last_heartbeat_hash: Optional[int] = None
-        # mtime of agent.json at last check
+        # mtime of agent.json at last check (and tenant root config when set)
         self._last_mtime: float = 0.0
+        self._last_agent_json_mtime: float = 0.0
+        self._last_tenant_root_mtime: float = 0.0
 
     async def start(self) -> None:
         """Take initial snapshot and start the polling task."""
@@ -80,9 +92,14 @@ class AgentConfigWatcher:
             self._poll_loop(),
             name=f"agent_config_watcher_{self._agent_id}",
         )
+        extra = (
+            f" tenant_root={self._root_config_path}"
+            if self._watch_tenant_config
+            else ""
+        )
         logger.info(
             f"AgentConfigWatcher started for agent {self._agent_id} "
-            f"(poll={self._poll_interval}s, path={self._config_path})",
+            f"(poll={self._poll_interval}s, path={self._config_path}){extra}",
         )
 
     async def stop(self) -> None:
@@ -103,12 +120,25 @@ class AgentConfigWatcher:
     def _snapshot(self) -> None:
         """Load current agent config; record mtime and hashes."""
         try:
-            self._last_mtime = self._config_path.stat().st_mtime
+            aj = self._config_path.stat().st_mtime
         except FileNotFoundError:
-            self._last_mtime = 0.0
+            aj = 0.0
+        self._last_agent_json_mtime = aj
+        if self._watch_tenant_config and self._root_config_path:
+            try:
+                tr = self._root_config_path.stat().st_mtime
+            except OSError:
+                tr = 0.0
+            self._last_tenant_root_mtime = tr
+            self._last_mtime = max(aj, tr)
+        else:
+            self._last_mtime = aj
 
         try:
-            agent_config = load_agent_config(self._agent_id)
+            agent_config = load_agent_config(
+                self._agent_id,
+                config_path=self._root_config_path,
+            )
             if agent_config.channels:
                 self._last_channels = agent_config.channels.model_copy(
                     deep=True,
@@ -257,21 +287,37 @@ class AgentConfigWatcher:
     async def _check(self) -> None:
         """Check for config changes and reload if needed."""
         try:
-            mtime = self._config_path.stat().st_mtime
+            aj = self._config_path.stat().st_mtime
         except FileNotFoundError:
             return
 
-        if mtime == self._last_mtime:
-            return
-
-        self._last_mtime = mtime
+        if self._watch_tenant_config and self._root_config_path:
+            try:
+                tr = self._root_config_path.stat().st_mtime
+            except OSError:
+                return
+            if (
+                aj == self._last_agent_json_mtime
+                and tr == self._last_tenant_root_mtime
+            ):
+                return
+            self._last_agent_json_mtime = aj
+            self._last_tenant_root_mtime = tr
+            self._last_mtime = max(aj, tr)
+        else:
+            if aj == self._last_mtime:
+                return
+            self._last_mtime = aj
 
         try:
-            agent_config = load_agent_config(self._agent_id)
+            agent_config = load_agent_config(
+                self._agent_id,
+                config_path=self._root_config_path,
+            )
         except Exception:
             logger.exception(
                 f"AgentConfigWatcher ({self._agent_id}): "
-                f"failed to parse agent.json",
+                f"failed to parse agent config",
             )
             return
 

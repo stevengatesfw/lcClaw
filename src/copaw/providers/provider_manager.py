@@ -636,6 +636,20 @@ class ProviderManager:
             return self.custom_providers[provider_id]
         return None
 
+    def find_model_info_by_id(self, model_id: str) -> ModelInfo | None:
+        """Return catalog ``ModelInfo`` for *model_id* if listed on any provider."""
+        mid = (model_id or "").strip()
+        if not mid:
+            return None
+        for prov in (
+            *self.builtin_providers.values(),
+            *self.custom_providers.values(),
+        ):
+            for m in list(prov.models) + list(prov.extra_models or []):
+                if m.id == mid:
+                    return m
+        return None
+
     async def get_provider_info(self, provider_id: str) -> ProviderInfo | None:
         provider = self.get_provider(provider_id)
         return await provider.get_info() if provider else None

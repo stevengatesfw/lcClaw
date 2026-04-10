@@ -173,12 +173,15 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             model, formatter = create_model_and_formatter(
                 agent_id=agent_config.id,
             )
-        model_info = (
-            f"{agent_config.active_model.provider_id}/"
-            f"{agent_config.active_model.model}"
-            if agent_config.active_model
-            else "global-fallback"
-        )
+        if llm_cfg is not None:
+            model_info = f"lcagent-resolved/{llm_cfg.model or 'default'}"
+        elif agent_config.active_model:
+            model_info = (
+                f"{agent_config.active_model.provider_id}/"
+                f"{agent_config.active_model.model}"
+            )
+        else:
+            model_info = "global-fallback"
         logger.info(
             "Agent '%s' initialized with model: %s (class: %s)",
             agent_config.id,

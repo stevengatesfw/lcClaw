@@ -683,6 +683,28 @@ def copaw_storage_isolation_enabled() -> bool:
     return bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
 
+def is_tenant_storage_config_path(config_path: Optional[Path]) -> bool:
+    """True if ``config_path`` is not the global working-dir ``config.json``.
+
+    Per-tenant roots live at ``users/<uid>/config.json``. When this returns
+    True and storage isolation is enabled, :func:`load_agent_config` applies
+    ``channels`` from that file over shared ``workspace/.../agent.json``.
+
+    Treat channel secrets like any other credential: rotate if exposed and
+    prefer env/K8s secrets over long-lived plaintext in JSON when possible.
+    """
+    if config_path is None:
+        return False
+    try:
+        left = config_path.expanduser().resolve()
+        right = get_config_path().expanduser().resolve()
+    except OSError:
+        return os.path.normcase(str(config_path)) != os.path.normcase(
+            str(get_config_path()),
+        )
+    return left != right
+
+
 def get_config_path_for_user(user_id: Optional[str]) -> Path:
     """Per-user config.json under users/<user_id>/ (same layout as chats)."""
     return (get_user_working_dir(user_id) / CONFIG_FILE).expanduser()
