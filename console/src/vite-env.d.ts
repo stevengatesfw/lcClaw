@@ -9,6 +9,12 @@ interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
 
+declare module "dayjs" {
+  interface Dayjs {
+    fromNow(withoutSuffix?: boolean): string;
+  }
+}
+
 declare module "*.less" {
   const classes: { [key: string]: string };
   export default classes;

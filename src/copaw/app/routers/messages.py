@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from agentscope_runtime.engine.schemas.exception import (
+    AppBaseException,
+)
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..migration import ensure_tenant_default_agent
@@ -127,7 +130,7 @@ async def send_message(
             agent_id,
             config_path=config_path,
         )
-    except ValueError as e:
+    except (ValueError, AppBaseException) as e:
         logger.error("Agent not found: %s", e)
         raise HTTPException(
             status_code=404,
