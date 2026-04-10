@@ -27,7 +27,7 @@ const HeartbeatPage = lazyWithRetry(
 const AgentConfigPage = lazyWithRetry(() => import("../../pages/Agent/Config"));
 const SkillsPage = lazyWithRetry(() => import("../../pages/Agent/Skills"));
 const SkillPoolPage = lazyWithRetry(
-  () => import("../../pages/Agent/SkillPool"),
+  () => import("../../pages/Settings/SkillPool"),
 );
 const ToolsPage = lazyWithRetry(() => import("../../pages/Agent/Tools"));
 const WorkspacePage = lazyWithRetry(
