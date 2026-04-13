@@ -9,7 +9,12 @@ import api, {
   type ChatStatus,
   type Message,
 } from "../../../api";
-import { toDisplayUrl } from "../utils";
+import {
+  collectToolOutputImagesAndRewriteOutput,
+  extractMarkdownImageUrls,
+  stripMarkdownImageSyntax,
+  toDisplayUrl,
+} from "../utils";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -142,7 +147,53 @@ function contentToRequestParts(
 function normalizeOutputMessageContent(content: unknown): unknown {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content;
-  return (content as ContentItem[]).map(resolveContentItemUrl);
+  const items = content as ContentItem[];
+  const resolved: ContentItem[] = [];
+  const extraImages: ContentItem[] = [];
+
+  for (const c of items) {
+    if (c.type === "data" && c.data && typeof c.data === "object") {
+      const data = c.data as Record<string, unknown>;
+      if ("output" in data) {
+        const { imageUrls, displayOutput } =
+          collectToolOutputImagesAndRewriteOutput(data.output);
+        const newData =
+          displayOutput !== undefined
+            ? { ...data, output: displayOutput }
+            : data;
+        resolved.push({ ...c, data: newData } as ContentItem);
+        for (const raw of imageUrls) {
+          extraImages.push({
+            type: "image",
+            image_url: toDisplayUrl(raw),
+          });
+        }
+        continue;
+      }
+    }
+
+    const base = resolveContentItemUrl(c);
+    if (base.type === "text" && typeof base.text === "string") {
+      const urls = extractMarkdownImageUrls(base.text);
+      if (urls.length > 0) {
+        for (const raw of urls) {
+          extraImages.push({
+            type: "image",
+            image_url: toDisplayUrl(raw),
+          });
+        }
+        const stripped = stripMarkdownImageSyntax(base.text);
+        resolved.push({
+          ...base,
+          text: stripped.trim(),
+        });
+        continue;
+      }
+    }
+    resolved.push(base);
+  }
+
+  return [...resolved, ...extraImages];
 }
 
 /**

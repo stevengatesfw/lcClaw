@@ -119,6 +119,29 @@ _MISSING_ORIGIN_FOR_LCAGENT_PATH_MSG = (
 )
 
 
+def _success_text_with_link(
+    file_url: str,
+    mime_type: str,
+    filename: str,
+) -> TextBlock:
+    """Text shown after tool runs; keeps a renderable link when media blocks are stripped.
+
+    OpenAI-formatter ``promote_tool_result_images`` can drop Image/File blocks from
+    persisted tool output, leaving only text. Embedding markdown preserves the URL
+    for console markdown and for stream parsers that inject image content.
+    """
+    name = (filename or "file").replace("[", "").replace("]", "") or "file"
+    as_type = _auto_as_type(mime_type)
+    if as_type == "image":
+        line = f"![{name}]({file_url})"
+    else:
+        line = f"[{name}]({file_url})"
+    return TextBlock(
+        type="text",
+        text=f"File sent successfully.\n\n{line}",
+    )
+
+
 def _tool_response_for_media_url(
     file_url: str,
     mime_type: str,
@@ -127,7 +150,7 @@ def _tool_response_for_media_url(
     """Build Image/Audio/Video/File blocks; ``file_url`` is http(s), file://, or path token."""
     as_type = _auto_as_type(mime_type)
     source = {"type": "url", "url": file_url}
-    ok = TextBlock(type="text", text="File sent successfully.")
+    ok = _success_text_with_link(file_url, mime_type, filename)
 
     if as_type == "image":
         return ToolResponse(

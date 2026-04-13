@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+import { getApiToken } from "../../api/config";
 import { chatApi } from "../../api/modules/chat";
 export type CopyableContent = {
   type?: string;
@@ -151,6 +152,36 @@ function absolutizeConsoleDownloadToRelativeWhenEmbedded(raw: string): string {
   }
 }
 
+/** True when this is a same-origin LCAgent Flask download path (not CoPaw preview). */
+function isLcagentConsoleFilesDownloadRef(relativePathWithQuery: string): boolean {
+  const t = relativePathWithQuery.trim();
+  if (t.startsWith("http://") || t.startsWith("https://")) return false;
+  const noHash = t.split("#")[0] ?? "";
+  const q = noHash.indexOf("?");
+  const pathOnly = (q === -1 ? noHash : noHash.slice(0, q)).trim();
+  const p = pathOnly.startsWith("/") ? pathOnly : `/${pathOnly}`;
+  return p.includes("/console/api/files/download");
+}
+
+function appendPreviewTokenIfMissing(url: string): string {
+  const token = getApiToken();
+  if (!token || url.includes("token=")) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+/** Same-origin absolute URL for LCAgent download; never pass through filePreviewUrl. */
+function lcagentConsoleDownloadDisplayUrl(pathWithOptionalQuery: string): string {
+  const noHash = pathWithOptionalQuery.split("#")[0] ?? "";
+  const normalized = noHash.startsWith("/") ? noHash : `/${noHash}`;
+  const relative = normalized;
+  const withToken = appendPreviewTokenIfMissing(relative);
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}${withToken}`;
+  }
+  return withToken;
+}
+
 /** Decode each path segment; keeps `/` delimiters (including repeated `/`). */
 function decodeUriPathSegments(path: string): string {
   return path
@@ -205,10 +236,213 @@ export function normalizeContentUrls(part: any): any {
 export function toDisplayUrl(url: string | undefined): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) {
-    return absolutizeConsoleDownloadToRelativeWhenEmbedded(url);
+    const relOrRaw = absolutizeConsoleDownloadToRelativeWhenEmbedded(url);
+    if (
+      relOrRaw.startsWith("/") &&
+      isLcagentConsoleFilesDownloadRef(relOrRaw)
+    ) {
+      return lcagentConsoleDownloadDisplayUrl(relOrRaw);
+    }
+    return relOrRaw;
   }
   if (url.startsWith("file://")) url = url.replace("file://", "");
-  return chatApi.filePreviewUrl(url.startsWith("/") ? url : `/${url}`);
+  const normalized = url.startsWith("/") ? url : `/${url}`;
+  if (isLcagentConsoleFilesDownloadRef(normalized)) {
+    return lcagentConsoleDownloadDisplayUrl(normalized);
+  }
+  return chatApi.filePreviewUrl(normalized);
+}
+
+/** Markdown images `![alt](url)` — raw URL substrings (for send_file text fallback). */
+export function extractMarkdownImageUrls(text: string): string[] {
+  const re = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+  const urls: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const u = m[1].trim();
+    if (u) urls.push(u);
+  }
+  return urls;
+}
+
+/** Remove `![...](...)` spans so structured image blocks do not duplicate rendering. */
+export function stripMarkdownImageSyntax(text: string): string {
+  return text.replace(/!\[[^\]]*\]\([^)]+\)\s*/g, "").trimEnd();
+}
+
+function urlFromImageLikeBlock(block: Record<string, unknown>): string {
+  if (typeof block.image_url === "string" && block.image_url.trim())
+    return block.image_url.trim();
+  const src = block.source;
+  if (
+    src &&
+    typeof src === "object" &&
+    String((src as { type?: string }).type || "").toLowerCase() === "url"
+  ) {
+    const u = (src as { url?: string }).url;
+    if (typeof u === "string" && u.trim()) return u.trim();
+  }
+  return "";
+}
+
+/**
+ * Parse tool result `data.output` (string or JSON array of content blocks):
+ * collect image URLs (markdown in text + structured image blocks) and optionally
+ * rewrite output so thumbnails render from `image` parts without duplicate markdown.
+ */
+export function collectToolOutputImagesAndRewriteOutput(output: unknown): {
+  imageUrls: string[];
+  displayOutput?: string;
+} {
+  const imageUrls: string[] = [];
+
+  const addUrlsFromText = (text: string): string => {
+    const urls = extractMarkdownImageUrls(text);
+    if (urls.length) imageUrls.push(...urls);
+    return stripMarkdownImageSyntax(text);
+  };
+
+  if (output == null) return { imageUrls: [] };
+
+  if (typeof output === "string") {
+    const t = output.trim();
+    if (t.startsWith("[") || t.startsWith("{")) {
+      try {
+        const parsed: unknown = JSON.parse(output);
+        if (Array.isArray(parsed)) {
+          const next: unknown[] = [];
+          let changed = false;
+          for (const el of parsed) {
+            if (!el || typeof el !== "object") {
+              next.push(el);
+              continue;
+            }
+            const b = el as Record<string, unknown>;
+            const typ = String(b.type || "");
+            if (typ === "text" && typeof b.text === "string") {
+              const newText = addUrlsFromText(b.text);
+              if (newText !== b.text) changed = true;
+              next.push({ ...b, text: newText });
+            } else if (typ === "image") {
+              const u = urlFromImageLikeBlock(b);
+              if (u) {
+                imageUrls.push(u);
+                changed = true;
+              } else next.push(b);
+            } else {
+              next.push(b);
+            }
+          }
+          const deduped = [...new Set(imageUrls)];
+          if (changed || deduped.length > 0) {
+            return {
+              imageUrls: deduped,
+              displayOutput: JSON.stringify(next),
+            };
+          }
+          return { imageUrls: deduped };
+        }
+      } catch {
+        /* treat as plain string */
+      }
+    }
+    const urls = extractMarkdownImageUrls(output);
+    if (urls.length === 0) return { imageUrls: [] };
+    return {
+      imageUrls: [...new Set(urls)],
+      displayOutput: stripMarkdownImageSyntax(output),
+    };
+  }
+
+  if (Array.isArray(output)) {
+    const next: unknown[] = [];
+    let changed = false;
+    for (const el of output) {
+      if (!el || typeof el !== "object") {
+        next.push(el);
+        continue;
+      }
+      const b = el as Record<string, unknown>;
+      const typ = String(b.type || "");
+      if (typ === "text" && typeof b.text === "string") {
+        const newText = addUrlsFromText(b.text);
+        if (newText !== b.text) changed = true;
+        next.push({ ...b, text: newText });
+      } else if (typ === "image") {
+        const u = urlFromImageLikeBlock(b);
+        if (u) {
+          imageUrls.push(u);
+          changed = true;
+        } else next.push(b);
+      } else {
+        next.push(b);
+      }
+    }
+    const deduped = [...new Set(imageUrls)];
+    if (changed || deduped.length > 0) {
+      return { imageUrls: deduped, displayOutput: JSON.stringify(next) };
+    }
+    return { imageUrls: deduped };
+  }
+
+  return { imageUrls: [] };
+}
+
+const STATUS_COMPLETED = "completed";
+
+/** Append synthetic `image` items from `type: data` tool outputs (stream + history). */
+export function augmentContentArrayWithToolOutputMedia(
+  content: unknown[],
+): unknown[] {
+  let changed = false;
+  const newContent: unknown[] = [];
+  const extraImages: Record<string, unknown>[] = [];
+
+  for (const raw of content) {
+    if (!raw || typeof raw !== "object") {
+      newContent.push(raw);
+      continue;
+    }
+    const item = raw as Record<string, unknown>;
+    if (item.type === "data" && item.data && typeof item.data === "object") {
+      const data = item.data as Record<string, unknown>;
+      if ("output" in data) {
+        const { imageUrls, displayOutput } =
+          collectToolOutputImagesAndRewriteOutput(data.output);
+        if (imageUrls.length > 0 || displayOutput !== undefined) {
+          changed = true;
+          const newData = {
+            ...data,
+            ...(displayOutput !== undefined ? { output: displayOutput } : {}),
+          };
+          newContent.push({ ...item, data: newData });
+          for (const u of imageUrls) {
+            extraImages.push({
+              type: "image",
+              image_url: toDisplayUrl(u),
+              object: "content",
+              delta: false,
+              status: STATUS_COMPLETED,
+            });
+          }
+          continue;
+        }
+      }
+    }
+    newContent.push(item);
+  }
+
+  if (extraImages.length === 0 && !changed) return content;
+
+  const seen = new Set<string>();
+  const uniqueExtras = extraImages.filter((im) => {
+    const u = String((im as { image_url?: string }).image_url || "");
+    if (!u || seen.has(u)) return false;
+    seen.add(u);
+    return true;
+  });
+
+  return [...newContent, ...uniqueExtras];
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import {
   type CopyableResponse,
   type RuntimeLoadingBridgeApi,
 } from "./utils";
+import { createCopawStreamResponseParser } from "./streamResponseParser";
 
 const CHAT_ATTACHMENT_MAX_MB = 10;
 
@@ -471,6 +472,11 @@ export default function ChatPage() {
   const chatIdRef = useRef(chatId);
   const navigateRef = useRef(navigate);
   const chatRef = useRef<IAgentScopeRuntimeWebUIRef>(null);
+  const streamDeltaState = useRef({ hasStreamedDelta: false });
+  const copawStreamParser = useMemo(
+    () => createCopawStreamResponseParser(streamDeltaState.current),
+    [],
+  );
 
   useMessageHistoryNavigation(chatRef, isChatActive, isComposingRef);
   chatIdRef.current = chatId;
@@ -679,6 +685,8 @@ export default function ChatPage() {
         }
       }
 
+      copawStreamParser.reset();
+
       const response = await fetch(
         getLcagentConsoleApiUrl("/copaw/agent/process"),
         {
@@ -830,6 +838,7 @@ export default function ChatPage() {
       api: {
         ...defaultConfig.api,
         fetch: customFetch,
+        responseParser: (raw: string) => copawStreamParser.parse(raw),
         replaceMediaURL: (url: string) => {
           return toDisplayUrl(url);
         },
@@ -879,6 +888,7 @@ export default function ChatPage() {
     } as unknown as IAgentScopeRuntimeWebUIOptions;
   }, [
     customFetch,
+    copawStreamParser,
     copyResponse,
     handleFileUpload,
     t,
