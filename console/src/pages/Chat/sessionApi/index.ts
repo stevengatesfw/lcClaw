@@ -111,8 +111,21 @@ function resolveContentItemUrl(c: ContentItem): ContentItem {
   if (c.type === "audio" && c.data) {
     return { ...c, data: toDisplayUrl(c.data as string) };
   }
-  if (c.type === "video" && c.video_url) {
-    return { ...c, video_url: toDisplayUrl(c.video_url as string) };
+  if (c.type === "video") {
+    let raw =
+      typeof c.video_url === "string" ? (c.video_url as string).trim() : "";
+    if (!raw && c.source && typeof c.source === "object") {
+      const src = c.source as { type?: string; url?: string };
+      if (
+        String(src.type || "").toLowerCase() === "url" &&
+        typeof src.url === "string"
+      ) {
+        raw = src.url.trim();
+      }
+    }
+    if (!raw) return c;
+    const display = toDisplayUrl(raw);
+    return { ...c, video_url: display, source: { type: "url", url: display } };
   }
   if (c.type === "file" && (c.file_url || c.file_id)) {
     return {

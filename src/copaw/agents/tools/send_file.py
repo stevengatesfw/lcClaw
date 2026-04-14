@@ -4,6 +4,8 @@
 import os
 import mimetypes
 import unicodedata
+from pathlib import Path
+from typing import Optional
 from urllib.parse import quote, urlparse, unquote
 
 from agentscope.tool import ToolResponse
@@ -14,9 +16,29 @@ from agentscope.message import (
     VideoBlock,
 )
 
+from ...constant import USERS_DIR
 from ...context import get_process_request_meta
 
 from ..schema import FileBlock
+
+
+def _working_abspath_to_preview_url(absolute_path: str) -> Optional[str]:
+    """Map ``USERS_DIR/<user_id>/workspaces/...`` to browser path ``/copaw/api/files/preview/...``.
+
+    Nginx exposes lcClaw as ``/copaw/api/`` → service ``/api/``; same-origin relative
+    URLs work for ``<video src>`` and markdown links without frontend rewrites.
+    """
+    try:
+        resolved = Path(absolute_path).resolve()
+        base = Path(USERS_DIR).resolve()
+        rel = resolved.relative_to(base)
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts or ".." in parts:
+        return None
+    tail = "/".join(quote(p, safe="") for p in parts)
+    return f"/copaw/api/files/preview/{tail}"
 
 
 def _user_facing_file_url(absolute_path: str) -> str:
@@ -26,12 +48,20 @@ def _user_facing_file_url(absolute_path: str) -> str:
     ``/app/upload/``. The web UI maps those paths to
     ``.../files/download?file_path=...``.
 
-    Using ``file://...`` here can cause an intermediate layer to synthesize a
-    broken HTTP URL (e.g. ``?path=``). For those prefixes, pass the absolute
-    path as a plain string instead.
+    Workspace files under ``USERS_DIR`` (e.g. ``.../users/<id>/workspaces/...``)
+    are converted by :func:`_working_abspath_to_preview_url` to
+    ``/copaw/api/files/preview/<user_id>/workspaces/...``. Other allowed prefixes
+    use bare ``/tmp/`` / ``/app/upload/`` path tokens (not ``file://``).
+
+    Using ``file://...`` for other paths can cause an intermediate layer to
+    synthesize a broken HTTP URL (e.g. ``?path=``). For the prefixes above, pass
+    the absolute path as a plain string instead.
     """
     normalized = absolute_path.replace("\\", "/")
-    if normalized.startswith("/tmp/") or normalized.startswith("/app/upload/"):
+    if (
+        normalized.startswith("/tmp/")
+        or normalized.startswith("/app/upload/")
+    ):
         return normalized
     return f"file://{absolute_path}"
 
@@ -142,6 +172,26 @@ def _success_text_with_link(
     )
 
 
+def _tool_response_working_preview_url(
+    preview_url: str,
+    mime_type: str,
+    filename: str,
+) -> ToolResponse:
+    """Structured file + text; URL is same-origin ``/copaw/api/files/preview/...``."""
+    source = {"type": "url", "url": preview_url}
+    ok = _success_text_with_link(preview_url, mime_type, filename)
+    return ToolResponse(
+        content=[
+            FileBlock(
+                type="file",
+                source=source,
+                filename=filename or "file",
+            ),
+            ok,
+        ],
+    )
+
+
 def _tool_response_for_media_url(
     file_url: str,
     mime_type: str,
@@ -182,9 +232,10 @@ async def send_file_to_user(
     """Send a file to the user.
 
     Accepts:
-    - **Local paths** (``os.path.exists`` on this lcClaw container): always emit
-      URLs for the **embedded console** to resolve via ``file://`` or bare
-      ``/tmp/`` / ``/app/upload/`` tokens → ``/copaw/api/files/preview/...``.
+    - **Local paths** (``os.path.exists`` on this lcClaw container): files under
+      ``USERS_DIR/<user_id>/workspaces/...`` emit same-origin
+      ``/copaw/api/files/preview/<user_id>/workspaces/...``; other allowed dirs use
+      ``file://`` or bare ``/tmp/`` / ``/app/upload/`` tokens.
       Never use LCAgent ``/console/api/files/download`` for local files: that
       endpoint reads **LCAgent's** disk; lcClaw's ``/app/upload/`` or workspace
       paths are not the same files unless uploaded through LCAgent.
@@ -250,9 +301,16 @@ async def send_file_to_user(
             # ``.../console/api/files/download?file_path=...`` (LCAgent pod): that
             # URL only works when the bytes exist on LCAgent (e.g. after console
             # upload). Same path prefix ``/app/upload/`` on lcClaw is a different
-            # filesystem than LCAgent's ``/app/upload/``. Use console preview paths
-            # (``file://`` or bare ``/tmp/``/``/app/upload/`` tokens) so the browser
-            # hits ``/copaw/api/files/preview/...`` for local files.
+            # filesystem than LCAgent's ``/app/upload/``. Workspace trees under
+            # ``USERS_DIR`` use ``/copaw/api/files/preview/<user>/workspaces/...``;
+            # other allowed dirs use bare path tokens or ``file://``.
+            preview_url = _working_abspath_to_preview_url(absolute_path)
+            if preview_url:
+                return _tool_response_working_preview_url(
+                    preview_url,
+                    mime_type,
+                    os.path.basename(file_path_local),
+                )
             file_url = _user_facing_file_url(absolute_path)
             return _tool_response_for_media_url(
                 file_url,

@@ -51,7 +51,10 @@ function attachmentsAppendixFromContent(content: unknown[]): string {
       let u =
         typeof rec.video_url === "string" ? rec.video_url.trim() : "";
       if (!u) u = urlFromSource(rec);
-      if (u) lines.push(u);
+      if (u) {
+        const name = String(rec.filename || rec.file_name || "video").trim();
+        lines.push(name ? `[${name}](${u})` : u);
+      }
     }
   }
   if (lines.length === 0) return "";

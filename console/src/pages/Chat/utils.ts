@@ -163,6 +163,25 @@ function isLcagentConsoleFilesDownloadRef(relativePathWithQuery: string): boolea
   return p.includes("/console/api/files/download");
 }
 
+function isCopawPreviewRef(pathOrUrl: string): boolean {
+  const t = pathOrUrl.trim();
+  if (!t) return false;
+  try {
+    const u = new URL(
+      t,
+      typeof window !== "undefined" ? window.location.origin : "http://localhost",
+    );
+    return (
+      u.pathname.includes("/copaw/api/files/preview/") ||
+      u.pathname.includes("/api/files/preview/")
+    );
+  } catch {
+    return (
+      t.includes("/copaw/api/files/preview/") || t.includes("/api/files/preview/")
+    );
+  }
+}
+
 function appendPreviewTokenIfMissing(url: string): string {
   const token = getApiToken();
   if (!token || url.includes("token=")) return url;
@@ -182,6 +201,19 @@ function lcagentConsoleDownloadDisplayUrl(pathWithOptionalQuery: string): string
   return withToken;
 }
 
+function copawPreviewDisplayUrl(pathOrUrl: string): string {
+  const withToken = appendPreviewTokenIfMissing(pathOrUrl);
+  if (
+    withToken.startsWith("http://") ||
+    withToken.startsWith("https://") ||
+    typeof window === "undefined"
+  ) {
+    return withToken;
+  }
+  const normalized = withToken.startsWith("/") ? withToken : `/${withToken}`;
+  return `${window.location.origin}${normalized}`;
+}
+
 /** Decode each path segment; keeps `/` delimiters (including repeated `/`). */
 function decodeUriPathSegments(path: string): string {
   return path
@@ -199,6 +231,20 @@ function decodeUriPathSegments(path: string): string {
 
 /** Convert file URL to stored path for backend: keep full path after `/files/preview/`. */
 export function toStoredName(v: string): string {
+  for (const copawMarker of ["/copaw/api/files/preview/", "/api/files/preview/"]) {
+    const copawIdx = v.indexOf(copawMarker);
+    if (copawIdx !== -1) {
+      let rest = v.slice(copawIdx + copawMarker.length);
+      const q = rest.indexOf("?");
+      if (q !== -1) rest = rest.slice(0, q);
+      const h = rest.indexOf("#");
+      if (h !== -1) rest = rest.slice(0, h);
+      if (rest) {
+        const decoded = decodeUriPathSegments(rest).replace(/^\/+/, "");
+        return `/app/working/users/${decoded}`;
+      }
+    }
+  }
   const marker = "/files/preview/";
   const idx = v.indexOf(marker);
   if (idx !== -1) {
@@ -237,6 +283,9 @@ export function toDisplayUrl(url: string | undefined): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) {
     const relOrRaw = absolutizeConsoleDownloadToRelativeWhenEmbedded(url);
+    if (isCopawPreviewRef(relOrRaw)) {
+      return copawPreviewDisplayUrl(relOrRaw);
+    }
     if (
       relOrRaw.startsWith("/") &&
       isLcagentConsoleFilesDownloadRef(relOrRaw)
@@ -247,6 +296,9 @@ export function toDisplayUrl(url: string | undefined): string {
   }
   if (url.startsWith("file://")) url = url.replace("file://", "");
   const normalized = url.startsWith("/") ? url : `/${url}`;
+  if (isCopawPreviewRef(normalized)) {
+    return copawPreviewDisplayUrl(normalized);
+  }
   if (isLcagentConsoleFilesDownloadRef(normalized)) {
     return lcagentConsoleDownloadDisplayUrl(normalized);
   }
