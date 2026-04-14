@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Command dispatch: run command path without creating CoPawAgent.
+"""Command dispatch: run command path without creating lcClaw agent (CoPawAgent).
 
 Yields (Msg, last) compatible with query_handler stream.
 """

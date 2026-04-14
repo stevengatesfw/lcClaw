@@ -152,7 +152,7 @@ function absolutizeConsoleDownloadToRelativeWhenEmbedded(raw: string): string {
   }
 }
 
-/** True when this is a same-origin LCAgent Flask download path (not CoPaw preview). */
+/** True when this is a same-origin LCAgent Flask download path (not lcClaw /copaw preview). */
 function isLcagentConsoleFilesDownloadRef(relativePathWithQuery: string): boolean {
   const t = relativePathWithQuery.trim();
   if (t.startsWith("http://") || t.startsWith("https://")) return false;

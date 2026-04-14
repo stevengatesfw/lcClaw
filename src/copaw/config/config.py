@@ -176,7 +176,7 @@ class VoiceChannelConfig(BaseChannelConfig):
     tts_voice: str = "en-US-Journey-D"
     stt_provider: str = "deepgram"
     language: str = "en-US"
-    welcome_greeting: str = "Hi! This is CoPaw. How can I help you?"
+    welcome_greeting: str = "Hi! This is lcClaw. How can I help you?"
 
 
 class XiaoYiConfig(BaseChannelConfig):
@@ -973,7 +973,7 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             enabled=True,
             description=(
                 "Send files to user: local path, http(s) URL, or LCAgent paths "
-                "/app/upload/… /tmp/… when using LCAgent CoPaw proxy"
+                "/app/upload/… /tmp/… when using LCAgent lcClaw proxy"
             ),
             icon="📤",
         ),
@@ -1351,7 +1351,7 @@ def migrate_legacy_config_to_multi_agent() -> bool:
     default_agent_config = AgentProfileConfig(
         id="default",
         name="Default Agent",
-        description="Default CoPaw agent",
+        description="Default lcClaw agent",
         workspace_dir=str(default_workspace),
         channels=config.channels if config.channels else None,
         mcp=config.mcp if config.mcp else None,

@@ -182,17 +182,17 @@ async def send_file_to_user(
     """Send a file to the user.
 
     Accepts:
-    - **Local paths** (``os.path.exists`` on this CoPaw container): always emit
+    - **Local paths** (``os.path.exists`` on this lcClaw container): always emit
       URLs for the **embedded console** to resolve via ``file://`` or bare
       ``/tmp/`` / ``/app/upload/`` tokens → ``/copaw/api/files/preview/...``.
       Never use LCAgent ``/console/api/files/download`` for local files: that
-      endpoint reads **LCAgent's** disk; CoPaw's ``/app/upload/`` or workspace
+      endpoint reads **LCAgent's** disk; lcClaw's ``/app/upload/`` or workspace
       paths are not the same files unless uploaded through LCAgent.
     - ``http(s)://`` URLs: passed through to the client for preview/download.
     - LCAgent server paths ``/app/upload/...`` or ``/tmp/...`` when the file is
       **not** present in this container: builds the same URL as the console
       ``/console/api/files/download?file_path=...`` using
-      ``meta.lcagent_console_public_base`` (requires LCAgent CoPaw proxy).
+      ``meta.lcagent_console_public_base`` (requires LCAgent lcClaw proxy).
       Production typically uses ``https`` from ``LCAGENT_CONSOLE_PUBLIC_BASE``;
       optional env ``LCAGENT_COPAW_FILE_URL_SCHEME=http|https`` forces the scheme.
 
@@ -246,10 +246,10 @@ async def send_file_to_user(
             mime_type = "application/octet-stream"
         try:
             absolute_path = os.path.abspath(file_path_local)
-            # Local file always lives on this CoPaw process/container. Do NOT emit
+            # Local file always lives on this lcClaw process/container. Do NOT emit
             # ``.../console/api/files/download?file_path=...`` (LCAgent pod): that
             # URL only works when the bytes exist on LCAgent (e.g. after console
-            # upload). Same path prefix ``/app/upload/`` on CoPaw is a different
+            # upload). Same path prefix ``/app/upload/`` on lcClaw is a different
             # filesystem than LCAgent's ``/app/upload/``. Use console preview paths
             # (``file://`` or bare ``/tmp/``/``/app/upload/`` tokens) so the browser
             # hits ``/copaw/api/files/preview/...`` for local files.

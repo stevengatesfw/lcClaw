@@ -1,5 +1,5 @@
 /**
- * CoPaw SSE chunks: after text deltas, a final `object: message` may carry only
+ * lcClaw SSE chunks: after text deltas, a final `object: message` may carry only
  * file/image/audio/video blocks. @agentscope-ai/chat can drop those; mirror
  * front/app/(appLayout)/home/copawSse.ts by appending markdown text so the
  * stream merge path still shows attachments without refresh.

@@ -759,10 +759,10 @@ def get_plugins_dir() -> Path:
 
 
 def is_copaw_running() -> bool:
-    """Check if CoPaw is currently running by checking API availability.
+    """Check if lcClaw is currently running by checking API availability.
 
     Returns:
-        True if CoPaw is running, False otherwise
+        True if lcClaw is running, False otherwise
     """
     try:
         # Read last API host/port

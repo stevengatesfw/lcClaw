@@ -936,7 +936,7 @@ html.dark-mode .copaw-sender-content {
   padding: 0;
 }
 
-/* Welcome avatar: full tall SVG. Class is CoPaw-avatar (no "ant"). */
+/* Welcome avatar: full tall SVG. Class is CoPaw-avatar (legacy name; lcClaw chat). */
 [class*="chat-anywhere-welcome-default"] [class*="-avatar"],
 [class*="message-list-welcome"] [class*="welcome-default"] [class*="-avatar"] {
   width: 36px !important;
@@ -952,7 +952,7 @@ html.dark-mode .copaw-sender-content {
   object-position: center;
 }
 
-/* Move rightHeader to the leftmost position of the right header area (CoPaw chat) */
+/* Move rightHeader to the leftmost position of the right header area (lcClaw chat) */
 [class*="chat-anywhere-default-header-right"],
 [class*="default-header-right"],
 [class*="copaw-chat-anywhere-default-header-right"],

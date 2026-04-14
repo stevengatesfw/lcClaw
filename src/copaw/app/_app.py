@@ -541,10 +541,10 @@ def read_root():
         return FileResponse(_CONSOLE_INDEX)
     return {
         "message": (
-            "CoPaw Web Console is not available. "
-            "If you installed CoPaw from source code, please run "
-            "`npm ci && npm run build` in CoPaw's `console/` "
-            "directory, and restart CoPaw to enable the "
+            "lcClaw Web Console is not available. "
+            "If you installed lcClaw from source code, please run "
+            "`npm ci && npm run build` in lcClaw's `console/` "
+            "directory, and restart lcClaw to enable the "
             "web console."
         ),
     }
@@ -552,7 +552,7 @@ def read_root():
 
 @app.get("/api/version")
 def get_version():
-    """Return the current CoPaw version."""
+    """Return the current lcClaw version."""
     return {"version": __version__}
 
 

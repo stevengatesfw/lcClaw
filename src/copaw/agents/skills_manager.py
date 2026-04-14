@@ -17,6 +17,7 @@ import time
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, TypeVar
@@ -50,6 +51,12 @@ if fcntl is None and msvcrt is None:  # pragma: no cover
     )
 
 logger = logging.getLogger(__name__)
+
+# Process-local cache: skip full sync/reconcile when disk state matches last run.
+# Concurrent requests may both MISS and run ensure; work is idempotent (acceptable).
+# Optional later: per-workspace asyncio.Lock if coalescing duplicate work matters.
+_ensure_skills_skip_lock = threading.Lock()
+_ensure_skills_skip_cache: dict[str, Any] = {}
 
 ALL_SKILL_ROUTING_CHANNELS = [
     "console",
@@ -1124,6 +1131,7 @@ def apply_skill_config_env_overrides(
         for skill_name in resolve_effective_skills(
             workspace_dir,
             channel_name,
+            reconcile_manifest=False,
         ):
             entry = entries.get(skill_name) or {}
             config = entry.get("config") or {}
@@ -1613,9 +1621,19 @@ def read_skill_pool_manifest() -> dict[str, Any]:
 def resolve_effective_skills(
     workspace_dir: Path,
     channel_name: str,
+    *,
+    reconcile_manifest: bool = True,
 ) -> list[str]:
-    """Resolve enabled workspace skills for one channel."""
-    manifest = read_skill_manifest(workspace_dir)
+    """Resolve enabled workspace skills for one channel.
+
+    When the caller has just run ``ensure_skills_initialized`` or
+    ``read_skill_manifest(..., reconcile=True)``, pass
+    ``reconcile_manifest=False`` to avoid repeating sync/reconcile work.
+    """
+    manifest = read_skill_manifest(
+        workspace_dir,
+        reconcile=reconcile_manifest,
+    )
     resolved = []
     for skill_name, entry in sorted(manifest.get("skills", {}).items()):
         if not entry.get("enabled", False):
@@ -1628,10 +1646,156 @@ def resolve_effective_skills(
     return resolved
 
 
+def _stat_mtime_ns(path: Path) -> int | None:
+    """Return st_mtime_ns for a path, or None if missing/unreadable."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    mt = getattr(st, "st_mtime_ns", None)
+    if mt is not None:
+        return int(mt)
+    return int(st.st_mtime * 1_000_000_000)
+
+
+@dataclass(frozen=True)
+class _EnsureSkillsFingerprint:
+    """Cheap disk snapshot for ensure_skills_initialized skip path.
+
+    ``manifest_*`` refer to the **workspace root** file ``<workspace>/skill.json``
+    only (same path ``reconcile_workspace_manifest`` writes via
+    ``get_workspace_skill_manifest_path``). There is no separate workspace
+    ``manifest.json`` in this flow; per-skill state lives under that JSON plus
+    ``<workspace>/skills/<name>/`` (we fingerprint each skill dir + ``SKILL.md``
+    mtimes, not per-skill manifest files).
+    """
+
+    manifest_mtime_ns: int
+    manifest_size: int
+    skills: tuple[tuple[str, int], ...]
+    pool_manifest_mtime_ns: int
+    shared_root_mtime_ns: int
+    platform_config_mtime_ns: int
+
+
+def _ensure_skills_cache_key(workspace_dir: Path) -> str:
+    try:
+        return str(workspace_dir.resolve())
+    except OSError:
+        return str(workspace_dir)
+
+
+def _compute_ensure_skills_fingerprint(
+    workspace_dir: Path,
+) -> _EnsureSkillsFingerprint | None:
+    """Return a fingerprint, or None if we should not skip (e.g. no manifest).
+
+    Reads only ``<workspace>/skill.json`` (workspace manifest), not pool or
+    per-skill manifest.json files elsewhere.
+    """
+    manifest_path = get_workspace_skill_manifest_path(workspace_dir)
+    if not manifest_path.is_file():
+        return None
+    m_ns = _stat_mtime_ns(manifest_path)
+    if m_ns is None:
+        return None
+    try:
+        manifest_size = manifest_path.stat().st_size
+    except OSError:
+        return None
+
+    ws_skills = get_workspace_skills_dir(workspace_dir)
+    skill_parts: list[tuple[str, int]] = []
+    if ws_skills.exists():
+        try:
+            for p in sorted(ws_skills.iterdir()):
+                if not p.is_dir():
+                    continue
+                sm = p / "SKILL.md"
+                if not sm.is_file():
+                    continue
+                d_ns = _stat_mtime_ns(p)
+                s_ns = _stat_mtime_ns(sm)
+                if d_ns is None or s_ns is None:
+                    return None
+                skill_parts.append((p.name, max(d_ns, s_ns)))
+        except OSError:
+            return None
+
+    pool_m = 0
+    pool_path = get_pool_skill_manifest_path()
+    if pool_path.is_file():
+        pool_m = _stat_mtime_ns(pool_path) or 0
+
+    shared_m = 0
+    sd = get_shared_skills_dir()
+    if sd is not None and sd.is_dir():
+        shared_m = _stat_mtime_ns(sd) or 0
+
+    plat_m = 0
+    plat = PLATFORM_SKILLS_CONFIG_PATH
+    if plat is not None and plat.is_file():
+        plat_m = _stat_mtime_ns(plat) or 0
+
+    return _EnsureSkillsFingerprint(
+        manifest_mtime_ns=m_ns,
+        manifest_size=manifest_size,
+        skills=tuple(skill_parts),
+        pool_manifest_mtime_ns=pool_m,
+        shared_root_mtime_ns=shared_m,
+        platform_config_mtime_ns=plat_m,
+    )
+
+
 def ensure_skills_initialized(workspace_dir: Path) -> None:
-    """Ensure workspace manifests exist before runtime use."""
+    """Ensure workspace manifests exist before runtime use.
+
+    When manifest mtime/size and on-disk skill trees (plus cheap shared/pool
+    hints) are unchanged since the last successful run in this process, skips
+    ``sync_shared_skills_to_workspace`` and ``reconcile_workspace_manifest``.
+
+    **Order invariant (required for correct cache):** run
+    ``sync_shared_skills_to_workspace`` → ``reconcile_workspace_manifest`` (which
+    writes ``<workspace>/skill.json``), then compute ``fp_after`` and store it.
+    ``fp_after`` MUST be taken after reconcile so the cached fingerprint matches
+    the post-write ``skill.json`` mtime; otherwise the next request would MISS
+    forever.
+    """
+    key = _ensure_skills_cache_key(workspace_dir)
+    fp_before = _compute_ensure_skills_fingerprint(workspace_dir)
+
+    with _ensure_skills_skip_lock:
+        cached = _ensure_skills_skip_cache.get(key)
+        cache_hit = (
+            fp_before is not None
+            and cached is not None
+            and fp_before == cached
+        )
+
+    logger.info(
+        "ensure_skills check: workspace=%s cache=%s",
+        workspace_dir,
+        "HIT" if cache_hit else "MISS",
+    )
+
+    if cache_hit:
+        logger.debug(
+            "ensure_skills_initialized: skip unchanged workspace %s",
+            workspace_dir,
+        )
+        return
+
     sync_shared_skills_to_workspace(workspace_dir)
     reconcile_workspace_manifest(workspace_dir)
+
+    # After reconcile: skill.json mtimes reflect the write above; cache must
+    # snapshot post-reconcile state or every turn would MISS.
+    fp_after = _compute_ensure_skills_fingerprint(workspace_dir)
+    with _ensure_skills_skip_lock:
+        if fp_after is not None:
+            _ensure_skills_skip_cache[key] = fp_after
+        else:
+            _ensure_skills_skip_cache.pop(key, None)
 
 
 def get_pool_builtin_sync_status() -> dict[str, dict[str, Any]]:
@@ -1947,6 +2111,7 @@ class SkillService:
         for skill_name in resolve_effective_skills(
             self.workspace_dir,
             "console",
+            reconcile_manifest=False,
         ):
             entry = manifest.get("skills", {}).get(skill_name, {})
             skill = _read_skill_from_dir(

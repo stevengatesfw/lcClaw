@@ -136,7 +136,7 @@ def _feature_flags_from_process_meta() -> tuple[bool, bool]:
 
 
 def _env_lcagent_console_api_base() -> str:
-    """When POST meta has no ``lcagent_console_api_base`` (e.g. DingTalk → CoPaw direct).
+    """When POST meta has no ``lcagent_console_api_base`` (e.g. DingTalk → lcClaw direct).
 
     Same env keys as ``copaw_proxy_api._lcagent_console_api_base_for_copaw_meta``.
     """
@@ -788,7 +788,7 @@ class AgentRunner(Runner):
                 env_context += (
                     "\n- 已发布应用返回的路径与链接：\n"
                     "  /app/upload/、/tmp/、/console/api/files/download?… 等"
-                    "在 **LCAgent 后端**，**不在** CoPaw 工作目录。"
+                    "在 **LCAgent 后端**，**不在** lcClaw 工作目录。"
                     "勿用 read_file 等本地验证；有链接则原样给用户。\n"
                     "  send_file_to_user 可传入上述绝对路径或完整 http(s) 下载链接；"
                     "平台会将会话中注入的控制台地址拼成可预览的下载 URL。\n"
