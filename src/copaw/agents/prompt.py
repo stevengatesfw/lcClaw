@@ -9,6 +9,10 @@ import logging
 import re
 from pathlib import Path
 
+from agentscope_runtime.engine.schemas.exception import (
+    ConfigurationException,
+)
+
 from .utils.file_handling import read_text_file_with_encoding_fallback
 
 logger = logging.getLogger(__name__)
@@ -239,7 +243,7 @@ def build_system_prompt_from_working_dir(
             try:
                 agent_config = load_agent_config(agent_id, config_path=cfg_path)
                 enabled_files = agent_config.system_prompt_files
-            except (ValueError, FileNotFoundError):
+            except (ValueError, FileNotFoundError, ConfigurationException):
                 # Agent not found in config, fallback to global config
                 config = load_config(cfg_path)
                 enabled_files = config.agents.system_prompt_files
@@ -322,7 +326,9 @@ def build_bootstrap_guidance(
 def _get_active_model_info():
     """Resolve the active model's ModelInfo and model name.
 
-    Tries agent-specific model first, then falls back to global.
+    When the request uses LCAgent-resolved LLM (``meta.lcagent_resolved_llm``),
+    prefer that model id so multimodal hints match chat. Otherwise tries
+    agent-specific model, then global active model.
 
     Returns:
         A ``(ModelInfo, model_name)`` tuple.  Both elements are *None*
@@ -331,9 +337,24 @@ def _get_active_model_info():
     try:
         from ..app.agent_context import get_current_agent_id
         from ..config.config import load_agent_config
+        from ..context import get_process_request_meta
+        from ..providers.models import ResolvedModelConfig
         from ..providers.provider_manager import ProviderManager
 
         manager = ProviderManager.get_instance()
+
+        meta = get_process_request_meta()
+        raw_llm = meta.get("lcagent_resolved_llm")
+        if isinstance(raw_llm, dict):
+            try:
+                resolved = ResolvedModelConfig.model_validate(raw_llm)
+                mid = (resolved.model or "").strip()
+                if mid:
+                    info = manager.find_model_info_by_id(mid)
+                    if info is not None:
+                        return info, mid
+            except Exception:
+                pass
 
         # Try to get agent-specific model first
         active = None

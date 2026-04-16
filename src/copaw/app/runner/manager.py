@@ -10,7 +10,7 @@ from typing import Optional
 
 from ...config.utils import DEFAULT_USER_ID, copaw_storage_isolation_enabled
 from ...context import get_context_user_id
-from .models import ChatSpec
+from .models import ChatSpec, ChatUpdate
 from .repo import BaseChatRepository
 from ..channels.schema import DEFAULT_CHANNEL
 
@@ -151,18 +151,41 @@ class ChatManager:
             return spec
 
     async def update_chat(self, spec: ChatSpec) -> ChatSpec:
-        """Update an existing chat spec.
+        """Persist a chat spec after a turn (runner ``finally`` / tenant router).
 
-        Args:
-            spec: Updated chat specification
-
-        Returns:
-            Updated chat spec
+        Refreshes ``updated_at`` and upserts; used by
+        :class:`TenantRoutingChatManager` and direct :class:`ChatManager`.
         """
         async with self._lock:
-            spec.updated_at = datetime.now(timezone.utc)
-            await self._repo.upsert_chat(spec)
-            return spec
+            merged = spec.model_copy(
+                update={"updated_at": datetime.now(timezone.utc)},
+            )
+            await self._repo.upsert_chat(merged)
+            return merged
+
+    async def patch_chat(
+        self,
+        chat_id: str,
+        patch: ChatUpdate,
+    ) -> Optional[ChatSpec]:
+        """Merge a partial update into the latest persisted chat spec."""
+        async with self._lock:
+            existing = await self._repo.get_chat(chat_id)
+            if existing is None:
+                return None
+
+            updates = patch.model_dump(
+                exclude_none=True,
+                exclude_unset=True,
+            )
+            merged = existing.model_copy(update=updates)
+            merged.updated_at = datetime.now(timezone.utc)
+            await self._repo.upsert_chat(merged)
+            return merged
+
+    async def touch_chat(self, chat_id: str) -> Optional[ChatSpec]:
+        """Refresh updated_at without rewriting other chat fields."""
+        return await self.patch_chat(chat_id, ChatUpdate())
 
     async def delete_chats(self, chat_ids: list[str]) -> bool:
         """Delete a chat spec.

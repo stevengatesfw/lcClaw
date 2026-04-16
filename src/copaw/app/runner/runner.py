@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
+import os
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, Optional
 
+import frontmatter as fm
 from agentscope.message import Msg, TextBlock
 from agentscope.pipeline import stream_printing_messages
 from agentscope_runtime.engine.runner import Runner
 from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
-from agentscope_runtime.engine.schemas.exception import AgentException
+from agentscope_runtime.engine.schemas.exception import (
+    AgentException,
+    AppBaseException,
+)
 from dotenv import load_dotenv
 
 from .command_dispatch import (
@@ -21,13 +28,18 @@ from .command_dispatch import (
     _is_command,
     run_command_path,
 )
+from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
 from .query_error_dump import write_query_error_dump
 from .session import SafeJSONSession
 from .utils import build_env_context
 from ..channels.schema import DEFAULT_CHANNEL
 from ...agents.react_agent import CoPawAgent
 from ...agents.memory import ReMeLightMemoryManager
+from ...agents.utils.file_handling import (
+    read_text_file_with_encoding_fallback,
+)
 from ...config import load_config
+from ...exceptions import convert_model_exception
 from ...config.config import load_agent_config
 from ...config.utils import (
     copaw_storage_isolation_enabled,
@@ -41,6 +53,7 @@ from ...context import (
     get_process_request_meta,
     reset_current_working_dir,
     set_current_working_dir,
+    set_process_request_meta,
 )
 from ...providers.models import ResolvedModelConfig
 from ...security.tool_guard.approval import ApprovalDecision
@@ -94,22 +107,57 @@ def _meta_bool(value, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
+        s = value.strip().lower()
+        if not s:
+            return default
+        if s in {"0", "false", "no", "off"}:
+            return False
+        if s in {"1", "true", "yes", "on"}:
+            return True
+        return default
     return default
 
 
 def _feature_flags_from_process_meta() -> tuple[bool, bool]:
     """Read lcagent feature switches from agent/process meta.
 
+    When meta is absent (e.g. DingTalk) or keys omitted, default both to True
+    so behavior matches typical LCAgent proxy sessions.
+
     Returns:
         tuple[bool, bool]: (enable_agent, enable_skills)
     """
     meta = get_process_request_meta()
-    enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=False)
+    enable_agent = _meta_bool(meta.get("lcagent_enable_agent"), default=True)
     enable_skills = _meta_bool(
-        meta.get("lcagent_enable_skills"), default=False
+        meta.get("lcagent_enable_skills"), default=True
     )
     return enable_agent, enable_skills
+
+
+def _env_lcagent_console_api_base() -> str:
+    """When POST meta has no ``lcagent_console_api_base`` (e.g. DingTalk → lcClaw direct).
+
+    Same env keys as ``copaw_proxy_api._lcagent_console_api_base_for_copaw_meta``.
+    """
+    for key in ("LCAGENT_INTERNAL_CONSOLE_API_BASE", "LCAGENT_BACKEND_BASE_URL"):
+        raw = (os.environ.get(key) or "").strip().rstrip("/")
+        if raw:
+            return raw
+    return ""
+
+
+def _env_lcagent_console_public_base() -> str:
+    """Same env keys as ``copaw_proxy_api._lcagent_console_public_base`` (no request)."""
+    for key in ("LCAGENT_CONSOLE_PUBLIC_BASE", "WEB_CONSOLE_ENDPOINT"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        return raw.rstrip("/")
+    return ""
 
 
 class AgentRunner(Runner):
@@ -265,6 +313,142 @@ class AgentRunner(Runner):
         """
         self._workspace = workspace
 
+    @staticmethod
+    def _parse_skill_query(
+        query: str,
+    ) -> tuple[str, str] | None:
+        """Parse ``/name [input]`` or ``/[name with spaces] [input]``.
+
+        Bracket form ``/[...]`` handles spaces in skill names and
+        bypasses built-in command priority.
+
+        Returns ``(skill_name, user_input)`` or ``None``.
+        """
+        stripped = query.strip()
+        if not stripped.startswith("/"):
+            return None
+
+        rest = stripped[1:]  # drop leading /
+
+        # /[skill name] input — bracket form
+        if rest.startswith("["):
+            close = rest.find("]")
+            if close < 0:
+                return None
+            name = rest[1:close].strip().lower()
+            user_input = rest[close + 1 :].strip()
+            return (name, user_input) if name else None
+
+        # /name input — plain form
+        parts = rest.split(None, 1)
+        if not parts:
+            return None
+        name = parts[0].lower()
+        user_input = parts[1] if len(parts) > 1 else ""
+        return (name, user_input) if name else None
+
+    @staticmethod
+    def _maybe_inject_skill(
+        query: str | None,
+        msgs: list,
+        skills: dict,
+    ) -> Msg | None:
+        """Handle ``/<skill_name> [input]`` or ``/[skill name] [input]``.
+
+        *skills* is ``agent.toolkit.skills`` — already resolved for
+        the current channel during agent init.  Hot-reload safe because
+        the agent is recreated on every query.
+
+        Returns a ``Msg`` to short-circuit (skill info), or ``None``
+        to continue to the LLM with rewritten ``msgs``.
+        """
+        if not query or not query.startswith("/") or not msgs:
+            return None
+
+        parsed = AgentRunner._parse_skill_query(query)
+        if not parsed:
+            return None
+        name, user_input = parsed
+
+        # Lookup by folder name
+        skill = next(
+            (
+                s
+                for s in skills.values()
+                if Path(s["dir"]).name.lower() == name
+            ),
+            None,
+        )
+        if not skill:
+            return None
+
+        skill_dir = Path(skill["dir"])
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.exists():
+            return None
+
+        raw = read_text_file_with_encoding_fallback(skill_md)
+        post = fm.loads(raw)
+        display_name = post.get("name") or name
+
+        # /<name> without input → return skill info.
+        if not user_input:
+            desc = post.get("description") or "No description."
+            logger.info("Skill info: %s", name)
+            return Msg(
+                name="Friday",
+                role="assistant",
+                content=[
+                    TextBlock(
+                        type="text",
+                        text=(
+                            f"**{name}**\n\n"
+                            f"- **command**: `/{name}`, "
+                            f"`/[{name}]`\n"
+                            f"- **name**: {display_name}\n"
+                            f"- **description**: {desc}\n"
+                            f"- **path**: `{skill_dir}`"
+                        ),
+                    ),
+                ],
+            )
+
+        # /<name> <input> → rewrite user message with skill body.
+        merged = (
+            f"Use the [{display_name}] skill in "
+            f"`{skill_dir}` to fulfill "
+            f"user's task: {user_input}\n\n"
+            f"{post.content}"
+        )
+        AgentRunner._rewrite_last_message_text(msgs, merged)
+        logger.info("Skill invocation: %s", name)
+        return None
+
+    @staticmethod
+    def _rewrite_last_message_text(
+        msgs: list,
+        new_text: str,
+    ) -> None:
+        """Rewrite the text content of the last message in-place."""
+        if not msgs:
+            return
+        last = msgs[-1]
+        content = getattr(last, "content", None)
+        if isinstance(content, list):
+            for i, block in enumerate(content):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    content[i] = TextBlock(
+                        type="text",
+                        text=new_text,
+                    )
+                    return
+            content.insert(
+                0,
+                TextBlock(type="text", text=new_text),
+            )
+        elif isinstance(content, str):
+            last.content = new_text
+
     _APPROVAL_TIMEOUT_SECONDS = TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS
 
     async def _resolve_pending_approval(
@@ -416,8 +600,47 @@ class AgentRunner(Runner):
         chat = None
         mgr = None
         session_state_loaded = False
+        _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
         try:
             self._request_llm_cfg_override = _llm_cfg_from_process_meta()
+            if self._request_llm_cfg_override is None:
+                self._request_llm_cfg_override = (
+                    await fetch_lcagent_home_llm_resolved_config()
+                )
+            # Mirror HTTP /process behavior: when LCAgent injects meta, tools and
+            # prompt helpers see ``lcagent_resolved_llm``. Channels and other
+            # callers without POST meta only had the override on the runner;
+            # merge so multimodal hints and meta readers match chat.
+            _meta_snapshot_for_restore = copy.deepcopy(
+                dict(get_process_request_meta()),
+            )
+            if self._request_llm_cfg_override is not None:
+                cur = dict(get_process_request_meta())
+                if not cur.get("lcagent_resolved_llm"):
+                    set_process_request_meta(
+                        {
+                            **cur,
+                            "lcagent_resolved_llm": (
+                                self._request_llm_cfg_override.model_dump(
+                                    mode="json",
+                                )
+                            ),
+                        },
+                    )
+            # Direct channels (DingTalk, etc.) skip LCAgent's /console/api/copaw/agent/process,
+            # so meta lacks lcagent_console_api_base; merge from env like the Flask proxy does.
+            cur = dict(get_process_request_meta())
+            _meta_console: dict[str, str] = {}
+            if not str(cur.get("lcagent_console_api_base") or "").strip():
+                _api = _env_lcagent_console_api_base()
+                if _api:
+                    _meta_console["lcagent_console_api_base"] = _api
+            if not str(cur.get("lcagent_console_public_base") or "").strip():
+                _pub = _env_lcagent_console_public_base()
+                if _pub:
+                    _meta_console["lcagent_console_public_base"] = _pub
+            if _meta_console:
+                set_process_request_meta({**cur, **_meta_console})
             enable_agent, enable_skills = _feature_flags_from_process_meta()
             session_id = request.session_id
             # Prefer JWT context (UserIdContextMiddleware) over body; body
@@ -565,8 +788,10 @@ class AgentRunner(Runner):
                 env_context += (
                     "\n- 已发布应用返回的路径与链接：\n"
                     "  /app/upload/、/tmp/、/console/api/files/download?… 等"
-                    "在 **LCAgent 后端**，**不在** CoPaw 工作目录。"
+                    "在 **LCAgent 后端**，**不在** lcClaw 工作目录。"
                     "勿用 read_file 等本地验证；有链接则原样给用户。\n"
+                    "  send_file_to_user 可传入上述绝对路径或完整 http(s) 下载链接；"
+                    "平台会将会话中注入的控制台地址拼成可预览的下载 URL。\n"
                 )
                 if proc_meta.get("lcagent_user_attachment_paths"):
                     env_context += (
@@ -586,7 +811,13 @@ class AgentRunner(Runner):
 
             mcp_clients = await self._get_mcp_clients_for_user(user_id)
 
-            agent_config = load_agent_config(self.agent_id)
+            _root_cp = None
+            if self._workspace is not None:
+                _root_cp = getattr(self._workspace, "_root_config_path", None)
+            agent_config = load_agent_config(
+                self.agent_id,
+                config_path=_root_cp,
+            )
             if (
                 self._request_llm_cfg_override is not None
                 or copaw_storage_isolation_enabled()
@@ -594,6 +825,8 @@ class AgentRunner(Runner):
                 memory_manager = await self._get_memory_manager(user_id)
             else:
                 memory_manager = self.memory_manager
+
+            logger.debug(f"Enabled MCP: {mcp_clients}")
 
             agent = CoPawAgent(
                 agent_config=agent_config,
@@ -660,6 +893,17 @@ class AgentRunner(Runner):
                     f"session_id={session_id}",
                 )
 
+            # Skill info (/<name> without input) is display-only:
+            # persisted in chat history but not in agent memory.
+            skill_response = self._maybe_inject_skill(
+                query,
+                msgs,
+                agent.toolkit.skills,
+            )
+            if skill_response is not None:
+                yield skill_response, True
+                return
+
             try:
                 await self.session.load_session_state(
                     session_id=session_id,
@@ -690,29 +934,46 @@ class AgentRunner(Runner):
             if agent is not None:
                 await agent.interrupt()
             raise AgentException("Task has been cancelled!") from exc
+        except AppBaseException:
+            raise
         except Exception as e:
+            model_name = None
+            if agent and hasattr(agent, "model"):
+                model_name = getattr(agent.model, "model_name", None)
+
+            converted = convert_model_exception(e, model_name)
+
+            # Preserve all original error dump logic
             debug_dump_path = write_query_error_dump(
                 request=request,
-                exc=e,
+                exc=converted,
                 locals_=locals(),
             )
             path_hint = (
                 f"\n(Details:  {debug_dump_path})" if debug_dump_path else ""
             )
-            logger.exception(f"Error in query handler: {e}{path_hint}")
+            logger.exception(f"Error in query handler: {converted}{path_hint}")
             if debug_dump_path:
-                setattr(e, "debug_dump_path", debug_dump_path)
-                if hasattr(e, "add_note"):
-                    e.add_note(
+                setattr(converted, "debug_dump_path", debug_dump_path)
+                if hasattr(converted, "add_note"):
+                    converted.add_note(
                         f"(Details:  {debug_dump_path})",
                     )
                 suffix = f"\n(Details:  {debug_dump_path})"
-                e.args = (
-                    (f"{e.args[0]}{suffix}" if e.args else suffix.strip()),
-                ) + e.args[1:]
-            raise
+                if hasattr(converted, "message") and isinstance(
+                    converted.message,
+                    str,
+                ):
+                    converted.message += suffix
+                elif converted.args:
+                    converted.args = (
+                        f"{converted.args[0]}{suffix}",
+                    ) + converted.args[1:]
+            raise converted from e
         finally:
             self._request_llm_cfg_override = None
+            if _meta_snapshot_for_restore is not None:
+                set_process_request_meta(_meta_snapshot_for_restore)
             reset_current_working_dir()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(

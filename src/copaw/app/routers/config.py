@@ -33,6 +33,7 @@ from ..channels.registry import BUILTIN_CHANNEL_KEYS
 from ...config.config import (
     AgentsDefaultsConfig,
     AgentsLLMRoutingConfig,
+    Config,
     ConsoleConfig,
     DingTalkConfig,
     DiscordConfig,
@@ -48,13 +49,25 @@ from ...config.config import (
     TelegramConfig,
     VoiceChannelConfig,
     WecomConfig,
+    WeixinConfig,
 )
 
 from ..storage_deps import get_storage_config_path
 from ..auth import get_current_user_id_required
 from .schemas_config import HeartbeatBody
+from ..channels.qrcode_auth_handler import (
+    QRCODE_AUTH_HANDLERS,
+    generate_qrcode_image,
+)
 
 router = APIRouter(prefix="/config", tags=["config"])
+
+
+def _schedule_reload_active_agent(request: Request, config: Config) -> None:
+    """Hot-reload the workspace for ``active_agent`` after root config save."""
+    agent_id = config.agents.active_agent or "default"
+    if agent_id in config.agents.profiles:
+        schedule_agent_reload(request, agent_id)
 
 
 _CHANNEL_CONFIG_CLASS_MAP = {
@@ -70,6 +83,7 @@ _CHANNEL_CONFIG_CLASS_MAP = {
     "mqtt": MQTTConfig,
     "matrix": MatrixConfig,
     "wecom": WecomConfig,
+    "weixin": WeixinConfig,
 }
 
 
@@ -151,6 +165,7 @@ async def put_channels(
         config = load_config(config_path)
         config.channels = channels_config
         save_config(config, config_path)
+        _schedule_reload_active_agent(request, config)
     else:
         from ..agent_context import get_agent_for_request
         from ...config.config import save_agent_config
@@ -167,111 +182,50 @@ async def put_channels(
     return channels_config
 
 
-async def _get_weixin_base_url(request: Request) -> str:
-    """Return configured WeChat base_url for the current agent."""
-    from ..channels.weixin.client import _DEFAULT_BASE_URL
-
-    try:
-        from ..agent_context import get_agent_for_request
-
-        agent = await get_agent_for_request(request)
-        channels = agent.config.channels
-        if channels is not None:
-            weixin_cfg = getattr(channels, "weixin", None)
-            if weixin_cfg is not None:
-                return getattr(weixin_cfg, "base_url", "") or _DEFAULT_BASE_URL
-    except Exception:
-        pass
-    return _DEFAULT_BASE_URL
+# ── Unified QR code endpoints for all channels ─────────────────────────────
 
 
 @router.get(
-    "/channels/weixin/qrcode",
-    summary="Get WeChat iLink login QR code",
-    description="Fetch QR code image (base64 PNG) for WeChat iLink Bot login.",
+    "/channels/{channel}/qrcode",
+    summary="Get channel authorization QR code",
+    description=(
+        "Fetch a QR code image (base64 PNG) for the given channel. "
+        "Supported channels: " + ", ".join(QRCODE_AUTH_HANDLERS.keys())
+    ),
 )
-async def get_weixin_qrcode(request: Request) -> dict:
-    """Return a QR code image (base64 PNG) for WeChat iLink Bot login."""
-    import base64
-    import io
-    import httpx
-    from ..channels.weixin.client import ILinkClient
-
-    base_url = await _get_weixin_base_url(request)
-    client = ILinkClient(base_url=base_url)
-    await client.start()
-    try:
-        qr_data = await client.get_bot_qrcode()
-    except (httpx.HTTPError, Exception) as exc:
+async def get_channel_qrcode(request: Request, channel: str) -> dict:
+    """Return {qrcode_img, poll_token} for the requested channel."""
+    handler = QRCODE_AUTH_HANDLERS.get(channel)
+    if handler is None:
         raise HTTPException(
-            status_code=502,
-            detail=f"WeChat QR code fetch failed: {exc}",
-        ) from exc
-    finally:
-        await client.stop()
-
-    qrcode = qr_data.get("qrcode", "")
-    qrcode_img_url = qr_data.get("qrcode_img_content", "")
-
-    if not qrcode and not qrcode_img_url:
-        raise HTTPException(
-            status_code=502,
-            detail="WeChat returned empty QR code data",
+            status_code=404,
+            detail=f"QR code not supported for channel: {channel}",
         )
 
-    # Generate QR code image from the scan URL using segno (pure Python)
-    # The scan target is the URL that WeChat app should open when scanning
-    if qrcode_img_url.startswith("http"):
-        scan_url = qrcode_img_url
-    else:
-        scan_url = (
-            f"https://liteapp.weixin.qq.com/q/7GiQu1"
-            f"?qrcode={qrcode}&bot_type=3"
-        )
-    try:
-        qr = segno.make(scan_url, error="M")
-        buf = io.BytesIO()
-        qr.save(buf, kind="png", scale=6, border=2)
-        qrcode_img_b64 = base64.b64encode(buf.getvalue()).decode()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"QR code image generation failed: {exc}",
-        ) from exc
-
-    return {"qrcode_img": qrcode_img_b64, "qrcode": qrcode}
+    result = await handler.fetch_qrcode(request)
+    qrcode_img = generate_qrcode_image(result.scan_url)
+    return {"qrcode_img": qrcode_img, "poll_token": result.poll_token}
 
 
 @router.get(
-    "/channels/weixin/qrcode/status",
-    summary="Poll WeChat iLink QR code scan status",
+    "/channels/{channel}/qrcode/status",
+    summary="Poll channel QR code authorization status",
 )
-async def get_weixin_qrcode_status(
+async def get_channel_qrcode_status(
     request: Request,
-    qrcode: str,
+    channel: str,
+    token: str,
 ) -> dict:
-    """Poll QR code scan status. Returns {status, bot_token, base_url}."""
-    import httpx
-    from ..channels.weixin.client import ILinkClient
-
-    base_url = await _get_weixin_base_url(request)
-    client = ILinkClient(base_url=base_url)
-    await client.start()
-    try:
-        data = await client.get_qrcode_status(qrcode)
-    except (httpx.HTTPError, Exception) as exc:
+    """Return {status, credentials} for the requested channel."""
+    handler = QRCODE_AUTH_HANDLERS.get(channel)
+    if handler is None:
         raise HTTPException(
-            status_code=502,
-            detail=f"WeChat status check failed: {exc}",
-        ) from exc
-    finally:
-        await client.stop()
+            status_code=404,
+            detail=f"QR code not supported for channel: {channel}",
+        )
 
-    return {
-        "status": data.get("status", "waiting"),
-        "bot_token": data.get("bot_token", ""),
-        "base_url": data.get("baseurl", ""),
-    }
+    result = await handler.poll_status(token, request)
+    return {"status": result.status, "credentials": result.credentials}
 
 
 @router.get(
@@ -369,6 +323,7 @@ async def put_channel(
             config.channels = ChannelConfig()
         setattr(config.channels, channel_name, channel_config)
         save_config(config, config_path)
+        _schedule_reload_active_agent(request, config)
         return channel_config
 
     agent = await get_agent_for_request(request)

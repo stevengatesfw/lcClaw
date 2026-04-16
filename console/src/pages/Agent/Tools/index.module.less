@@ -129,7 +129,9 @@
   box-sizing: border-box;
   transition: all 0.2s ease-in-out;
 
-  :global(.copaw-card-body) {
+  :global(.copaw-card-body),
+  :global(.lcClaw-card-body),
+  :global(.ant-card-body) {
     padding: 0 !important;
   }
 
@@ -143,14 +145,11 @@
     }
   }
 
-  &.hoverCard {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+
+  &:hover {
     border-color: var(--color-border, #d9d9d9);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-  }
-
-  &.normalCard {
-    border-color: var(--color-border-secondary, #eae8e7);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
   }
 }
 

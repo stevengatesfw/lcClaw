@@ -22,7 +22,6 @@ import {
 import { buildAuthHeaders } from "../../api/authHeaders";
 import { providerApi } from "../../api/modules/provider";
 import type { ProviderInfo, ModelInfo } from "../../api/types";
-import ModelSelector from "./ModelSelector";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useAgentStore } from "../../stores/agentStore";
 import { useChatAnywhereInput } from "@agentscope-ai/chat";
@@ -37,9 +36,12 @@ import {
   extractCopyableText,
   normalizeContentUrls,
   extractUserMessageText,
+  extractTextFromMessage,
+  setTextareaValue,
   type CopyableResponse,
   type RuntimeLoadingBridgeApi,
 } from "./utils";
+import { createCopawStreamResponseParser } from "./streamResponseParser";
 
 const CHAT_ATTACHMENT_MAX_MB = 10;
 
@@ -214,16 +216,144 @@ function useMultimodalCapabilities(
     }
   }, [locationPathname, fetchMultimodalCaps, isChatActive]);
 
-  // Listen for model-switched event from ModelSelector
-  useEffect(() => {
-    const handler = () => {
-      fetchMultimodalCaps();
-    };
-    window.addEventListener("model-switched", handler);
-    return () => window.removeEventListener("model-switched", handler);
-  }, [fetchMultimodalCaps]);
-
   return multimodalCaps;
+}
+
+function useMessageHistoryNavigation(
+  chatRef: React.RefObject<IAgentScopeRuntimeWebUIRef | null>,
+  isChatActive: () => boolean,
+  isComposingRef: React.RefObject<boolean>,
+) {
+  const historyIndexRef = useRef<number>(-1);
+  const draftRef = useRef<string>("");
+
+  const getUserMessagesWithText = useCallback((): string[] => {
+    if (!chatRef.current?.messages?.getMessages) return [];
+
+    const allMessages = chatRef.current.messages.getMessages();
+    if (!Array.isArray(allMessages)) return [];
+
+    return allMessages
+      .filter((msg) => msg.role === "user")
+      .map((msg) => extractTextFromMessage(msg))
+      .filter((text) => text.trim().length > 0);
+  }, [chatRef]);
+
+  interface MessageResult {
+    index: number;
+    text: string;
+  }
+
+  const findMessageInDirection = (
+    messages: string[],
+    startIndex: number,
+    direction: 1 | -1,
+  ): MessageResult | null => {
+    const MAX_LOOKUP = 100;
+    let lookupIndex = startIndex;
+    let steps = 0;
+
+    while (
+      lookupIndex >= 0 &&
+      lookupIndex < messages.length &&
+      steps < MAX_LOOKUP
+    ) {
+      const messageText = messages[messages.length - 1 - lookupIndex];
+      if (messageText) {
+        return { index: lookupIndex, text: messageText };
+      }
+      lookupIndex += direction;
+      steps += 1;
+    }
+
+    return null;
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!isChatActive()) return;
+
+      const target = e.target as HTMLElement;
+      const isChatSender =
+        target?.tagName === "TEXTAREA" &&
+        target?.closest('[class*="sender"]') !== null;
+
+      if (!isChatSender) return;
+      if (isComposingRef.current || (e as any).isComposing) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const textarea = target as HTMLTextAreaElement;
+      const hasSelection = textarea.selectionStart !== textarea.selectionEnd;
+      if (hasSelection) return;
+
+      const userMessages = getUserMessagesWithText();
+
+      if (e.key === "ArrowUp") {
+        const cursorPosition = textarea.selectionStart || 0;
+        const textBeforeCursor = textarea.value.substring(0, cursorPosition);
+        const lineBreaks = textBeforeCursor.split("\n").length - 1;
+        if (lineBreaks > 0) return;
+
+        if (userMessages.length === 0) return;
+
+        if (historyIndexRef.current === -1) {
+          draftRef.current = textarea.value;
+        }
+
+        const startIndex = historyIndexRef.current + 1;
+        const messageText = findMessageInDirection(userMessages, startIndex, 1);
+
+        if (messageText) {
+          e.preventDefault();
+          historyIndexRef.current = messageText.index;
+          setTextareaValue(textarea, messageText.text);
+        }
+      } else if (e.key === "ArrowDown") {
+        if (historyIndexRef.current < 0) return;
+
+        const cursorPosition = textarea.selectionStart || 0;
+        const textAfterCursor = textarea.value.substring(cursorPosition);
+        if (textAfterCursor.includes("\n")) return;
+
+        const startIndex = historyIndexRef.current - 1;
+        const messageText = findMessageInDirection(
+          userMessages,
+          startIndex,
+          -1,
+        );
+
+        if (messageText) {
+          e.preventDefault();
+          historyIndexRef.current = messageText.index;
+          setTextareaValue(textarea, messageText.text);
+        } else {
+          e.preventDefault();
+          historyIndexRef.current = -1;
+          setTextareaValue(textarea, draftRef.current);
+        }
+      }
+    };
+
+    const handleFocus = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      const isChatSender =
+        target?.tagName === "TEXTAREA" &&
+        target?.closest('[class*="sender"]') !== null;
+
+      if (isChatSender) {
+        historyIndexRef.current = -1;
+        draftRef.current = "";
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    document.addEventListener("focusin", handleFocus, true);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown, true);
+      document.removeEventListener("focusin", handleFocus, true);
+    };
+  }, [isChatActive, isComposingRef, getUserMessagesWithText]);
 }
 
 function RuntimeLoadingBridge({
@@ -317,7 +447,8 @@ export default function ChatPage() {
   const embedChatOnly =
     typeof window !== "undefined" &&
     new URLSearchParams(location.search).get("embed") === "chat";
-  const { selectedAgent } = useAgentStore();
+  const { selectedAgent, setLastChatId, getLastChatId } = useAgentStore();
+  const [refreshKey, setRefreshKey] = useState(0);
   const runtimeLoadingBridgeRef = useRef<RuntimeLoadingBridgeApi | null>(null);
   const { message } = useAppMessage();
 
@@ -341,6 +472,13 @@ export default function ChatPage() {
   const chatIdRef = useRef(chatId);
   const navigateRef = useRef(navigate);
   const chatRef = useRef<IAgentScopeRuntimeWebUIRef>(null);
+  const streamDeltaState = useRef({ hasStreamedDelta: false });
+  const copawStreamParser = useMemo(
+    () => createCopawStreamResponseParser(streamDeltaState.current),
+    [],
+  );
+
+  useMessageHistoryNavigation(chatRef, isChatActive, isComposingRef);
   chatIdRef.current = chatId;
   navigateRef.current = navigate;
 
@@ -427,6 +565,33 @@ export default function ChatPage() {
   }, []);
 
   // Setup multimodal capabilities tracking via custom hook
+
+  // Refresh chat when selectedAgent changes, preserving last active chat per agent
+  const prevSelectedAgentRef = useRef(selectedAgent);
+  useEffect(() => {
+    const prevAgent = prevSelectedAgentRef.current;
+    if (prevAgent !== selectedAgent && prevAgent !== undefined) {
+      // Save current chat ID for the agent we're leaving
+      const currentChatId =
+        chatIdRef.current || lastSessionIdRef.current || undefined;
+      if (currentChatId && prevAgent) {
+        setLastChatId(prevAgent, currentChatId);
+      }
+
+      // Restore last chat ID for the agent we're switching to
+      const restored = getLastChatId(selectedAgent);
+      if (restored) {
+        navigateRef.current(`/chat/${restored}`, { replace: true });
+        sessionApi.preferredChatId = restored;
+      } else {
+        navigateRef.current("/chat", { replace: true });
+      }
+      lastSessionIdRef.current = null;
+
+      setRefreshKey((prev) => prev + 1);
+    }
+    prevSelectedAgentRef.current = selectedAgent;
+  }, [selectedAgent, setLastChatId, getLastChatId]);
 
   const copyResponse = useCallback(
     async (response: CopyableResponse) => {
@@ -519,6 +684,8 @@ export default function ChatPage() {
           sessionApi.setLastUserMessage(backendChatId, userText);
         }
       }
+
+      copawStreamParser.reset();
 
       const response = await fetch(
         getLcagentConsoleApiUrl("/copaw/agent/process"),
@@ -624,7 +791,6 @@ export default function ChatPage() {
             <RuntimeLoadingBridge bridgeRef={runtimeLoadingBridgeRef} />
             <ChatHeaderTitle />
             <span style={{ flex: 1 }} />
-            <ModelSelector />
             <ChatActionGroup />
           </>
         ),
@@ -656,7 +822,6 @@ export default function ChatPage() {
               </Tooltip>
             );
           },
-          accept: "*/*",
           customRequest: handleFileUpload,
         },
         placeholder: t("chat.inputPlaceholder"),
@@ -673,6 +838,7 @@ export default function ChatPage() {
       api: {
         ...defaultConfig.api,
         fetch: customFetch,
+        responseParser: (raw: string) => copawStreamParser.parse(raw),
         replaceMediaURL: (url: string) => {
           return toDisplayUrl(url);
         },
@@ -722,12 +888,14 @@ export default function ChatPage() {
     } as unknown as IAgentScopeRuntimeWebUIOptions;
   }, [
     customFetch,
+    copawStreamParser,
     copyResponse,
     handleFileUpload,
     t,
     isDark,
     multimodalCaps,
     embedChatOnly,
+    refreshKey,
   ]);
 
   return (
@@ -745,6 +913,7 @@ export default function ChatPage() {
         style={{ flex: 1, minHeight: 0, minWidth: 0 }}
       >
         <AgentScopeRuntimeWebUI
+          key={refreshKey}
           ref={chatRef}
           options={options}
         />

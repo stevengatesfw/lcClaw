@@ -37,6 +37,8 @@ export function useChannels() {
       "console",
       "dingtalk",
       "feishu",
+      "weixin",
+      "wecom",
       "imessage",
       "discord",
       "telegram",

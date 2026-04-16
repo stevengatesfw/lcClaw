@@ -8,8 +8,15 @@ RUN cd /app/console && npm ci --include=dev && npm run build
 
 # -----------------------------------------------------------------------------
 # Stage 2: runtime image with Python, Chromium, and app.
-# -----------------------------------------------------------------------------
-FROM agentscope-registry.ap-southeast-1.cr.aliyuncs.com/agentscope/node:slim
+# 国内临时拉 Python 基础镜像（不改 Docker daemon）二选一：
+# 1) 构建时走镜像代理（推荐，一条命令即可）：
+#    docker build --build-arg PYTHON_RUNTIME_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm ...
+# 2) 宿主机先拉再打 tag，再使用默认 FROM 构建：
+#    docker pull docker.m.daocloud.io/library/python:3.11-slim-bookworm
+#    docker tag docker.m.daocloud.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
+# 固定 CPython 3.11 + glibc（bookworm），避免 onnxruntime 在部分 node:slim 环境无 wheel。
+ARG PYTHON_RUNTIME_IMAGE=python:3.11-slim-bookworm
+FROM ${PYTHON_RUNTIME_IMAGE}
 
 # ENV variables
 ENV NODE_ENV=production
@@ -26,11 +33,21 @@ ENV COPAW_ENABLED_CHANNELS=${COPAW_ENABLED_CHANNELS}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# If apt cannot reach deb.debian.org (e.g. blocked CDN), use a Debian mirror at build time:
+#   docker build --build-arg APT_USE_MIRROR=1 -f deploy/Dockerfile ...
+# Optional: --build-arg APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
+ARG APT_USE_MIRROR=0
+ARG APT_MIRROR_HOST=mirrors.aliyun.com
+RUN set -eux; \
+  if [ "$APT_USE_MIRROR" = "1" ]; then \
+    find /etc/apt -type f \( -name "debian.sources" -o -name "*.sources" -o -name "*.list" -o -name "sources.list" \) | while read -r f; do \
+      sed -i "s/deb.debian.org/${APT_MIRROR_HOST}/g" "$f"; \
+      sed -i "s/security.debian.org/${APT_MIRROR_HOST}/g" "$f"; \
+    done; \
+  fi
+
 RUN apt-get update && apt-get install -y --fix-missing \
     curl  \
-    python3  \
-    python3-pip  \
-    python3-venv \
     build-essential  \
     libssl-dev  \
     git  \
@@ -91,7 +108,7 @@ RUN pip install --no-cache-dir .[ollama]
 # Init working dir with default config.json and HEARTBEAT.md (build time).
 RUN copaw init --defaults --accept-security
 
-# CoPaw app port (default 8088). Override at runtime with -e COPAW_PORT=3000.
+# lcClaw app port (default 8088). Override at runtime with -e COPAW_PORT=3000.
 ENV COPAW_PORT=8088
 
 COPY deploy/config/supervisord.conf.template /etc/supervisor/conf.d/supervisord.conf.template

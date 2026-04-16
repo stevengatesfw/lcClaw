@@ -14,6 +14,7 @@ from .session import SafeJSONSession
 from .manager import ChatManager
 from .models import (
     ChatSpec,
+    ChatUpdate,
     ChatHistory,
 )
 from .utils import agentscope_msg_to_message
@@ -156,7 +157,7 @@ async def get_chat(
 @router.put("/{chat_id}", response_model=ChatSpec)
 async def update_chat(
     chat_id: str,
-    spec: ChatSpec,
+    spec: ChatUpdate,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
     """Update an existing chat."""
@@ -166,14 +167,12 @@ async def update_chat(
             detail="chat_id mismatch",
         )
 
-    existing = await mgr.get_chat(chat_id)
-    if not existing:
+    updated = await mgr.patch_chat(chat_id, spec)
+    if updated is None:
         raise HTTPException(
             status_code=404,
             detail=f"Chat not found: {chat_id}",
         )
-
-    updated = await mgr.update_chat(spec)
     return updated
 
 

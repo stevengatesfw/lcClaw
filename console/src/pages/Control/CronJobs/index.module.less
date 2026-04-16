@@ -1,9 +1,12 @@
 .cronJobsPage {
   :global {
-    .copaw-spark-card-wrapper {
+    .copaw-spark-card-wrapper,
+    .lcClaw-spark-card-wrapper {
       padding: 0 !important;
     }
-    .copaw-table-wrapper .copaw-table-container .copaw-table-thead > tr > th {
+    .copaw-table-wrapper .copaw-table-container .copaw-table-thead > tr > th,
+    .lcClaw-table-wrapper .lcClaw-table-container .lcClaw-table-thead > tr > th,
+    .ant-table-wrapper .ant-table-container .ant-table-thead > tr > th {
       background: #f9f8f4 !important;
     }
   }
@@ -56,7 +59,9 @@
 }
 
 .tableCard {
-  :global(.ant-card-body) {
+  :global(.ant-card-body),
+  :global(.lcClaw-card-body),
+  :global(.copaw-card-body) {
     padding: 0;
   }
 }

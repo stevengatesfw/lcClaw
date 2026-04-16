@@ -40,7 +40,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
         }}
       >
         <p style={{ fontSize: 16, marginBottom: 8 }}>
-          请先登录 LCAgent 后再使用 CoPaw。
+          请先登录 LCAgent 后再使用 lcClaw。
         </p>
         <p style={{ fontSize: 14, color: "#666" }}>
           请从 LCAgent 控制台的 lcClaw 入口打开本页面。

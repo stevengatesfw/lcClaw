@@ -12,7 +12,6 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +25,9 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from agentscope_runtime.engine.schemas.exception import (
+    AppBaseException,
+)
 
 from ...agents.skills_hub import (
     SkillImportCancelled,
@@ -65,6 +67,9 @@ from ..utils import schedule_agent_reload
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/skills", tags=["skills"])
+
+MAX_TAGS = 8
+MAX_TAG_LENGTH = 16
 
 
 def _scan_error_payload(exc: SkillScanError) -> dict[str, Any]:
@@ -113,6 +118,7 @@ def _scan_error_response(exc: SkillScanError) -> JSONResponse:
 class SkillSpec(SkillInfo):
     enabled: bool = False
     channels: list[str] = Field(default_factory=lambda: ["all"])
+    tags: list[str] = Field(default_factory=list)
     config: dict[str, Any] = Field(default_factory=dict)
     last_updated: str = ""
 
@@ -122,6 +128,7 @@ class PoolSkillSpec(SkillInfo):
     commit_text: str = ""
     sync_status: str = ""
     latest_version_text: str = ""
+    tags: list[str] = Field(default_factory=list)
     config: dict[str, Any] = Field(default_factory=dict)
     last_updated: str = ""
 
@@ -188,12 +195,18 @@ class SkillConfigRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class SavePoolSkillRequest(CreateSkillRequest):
+class SavePoolSkillRequest(BaseModel):
+    name: str
+    content: str
     source_name: str | None = None
+    config: dict[str, Any] | None = None
 
 
-class SaveSkillRequest(CreateSkillRequest):
+class SaveSkillRequest(BaseModel):
+    name: str
+    content: str
     source_name: str | None = None
+    config: dict[str, Any] | None = None
 
 
 class HubInstallRequest(BaseModel):
@@ -438,7 +451,7 @@ async def _run_hub_install_task(
             error=str(exc),
             result=_scan_error_payload(exc),
         )
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         await _hub_task_set_status(
             task_id,
             HubInstallTaskStatus.FAILED,
@@ -500,21 +513,22 @@ def _build_workspace_skill_specs(
         skill = _read_skill_from_dir(skill_dir, source)
         if skill is None:
             continue
-        mtime = _get_skill_mtime(skill_dir)
+        dump = skill.model_dump()
+        dump["tags"] = entry.get("tags") or []
         specs.append(
             SkillSpec(
-                **skill.model_dump(),
+                **dump,
                 enabled=entry.get("enabled", False),
                 channels=entry.get("channels") or ["all"],
                 config=entry.get("config") or {},
-                last_updated=_mtime_to_iso(mtime),
+                last_updated=_get_skill_mtime(skill_dir),
             ),
         )
     return specs
 
 
 def _build_pool_skill_specs() -> list[PoolSkillSpec]:
-    manifest = read_skill_pool_manifest(reconcile=False)
+    manifest = read_skill_pool_manifest()
     entries = manifest.get("skills", {})
     pool_dir = get_skill_pool_dir()
     sync_info = get_pool_builtin_sync_status()
@@ -526,10 +540,11 @@ def _build_pool_skill_specs() -> list[PoolSkillSpec]:
         if skill is None:
             continue
         info = sync_info.get(skill_name, {})
-        mtime = _get_skill_mtime(skill_dir)
+        dump = skill.model_dump(exclude={"version_text"})
+        dump["tags"] = entry.get("tags") or []
         specs.append(
             PoolSkillSpec(
-                **skill.model_dump(exclude={"version_text"}),
+                **dump,
                 protected=bool(entry.get("protected", False)),
                 version_text=str(entry.get("version_text", "") or ""),
                 commit_text=str(entry.get("commit_text", "") or ""),
@@ -538,7 +553,7 @@ def _build_pool_skill_specs() -> list[PoolSkillSpec]:
                     info.get("latest_version_text", "") or "",
                 ),
                 config=entry.get("config") or {},
-                last_updated=_mtime_to_iso(mtime),
+                last_updated=_get_skill_mtime(skill_dir),
             ),
         )
     return specs
@@ -707,7 +722,7 @@ async def create_skill(
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not created:
         raise HTTPException(
@@ -761,7 +776,7 @@ async def upload_skill_zip(
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result.get("conflicts"):
         raise HTTPException(status_code=409, detail=result)
@@ -782,7 +797,7 @@ async def create_pool_skill(body: CreateSkillRequest) -> dict[str, Any]:
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not created:
         raise HTTPException(
@@ -811,13 +826,11 @@ async def save_pool_skill(body: SavePoolSkillRequest) -> dict[str, Any]:
             skill_name=body.source_name or body.name,
             target_name=body.name,
             content=body.content,
-            references=body.references,
-            scripts=body.scripts,
             config=body.config,
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result.get("success"):
         reason = result.get("reason")
@@ -858,7 +871,7 @@ async def upload_skill_pool_zip(
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result.get("conflicts"):
         raise HTTPException(status_code=409, detail=result)
@@ -877,7 +890,7 @@ async def import_skill_pool_from_hub(
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except SkillConflictError as exc:
         raise HTTPException(status_code=409, detail=exc.detail) from exc
@@ -905,7 +918,7 @@ async def upload_workspace_skill_to_pool(
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result.get("success"):
         status = 404 if result.get("reason") == "not_found" else 409
@@ -957,7 +970,7 @@ def _resolve_and_preflight(
             body.skill_name,
             body.overwrite,
         )
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(
             status_code=400,
             detail=str(exc),
@@ -1072,7 +1085,7 @@ async def import_pool_builtins(
 async def update_pool_builtin(skill_name: str) -> dict[str, Any]:
     try:
         return update_single_builtin(skill_name)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -1131,6 +1144,35 @@ async def delete_pool_skill_config(skill_name: str) -> dict[str, Any]:
     if not updated:
         raise HTTPException(status_code=404, detail="Pool skill not found")
     return {"cleared": True}
+
+
+def _validate_tags(tags: list[str]) -> list[str]:
+    if len(tags) > MAX_TAGS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_TAGS} tags allowed",
+        )
+    cleaned: list[str] = []
+    for t in tags:
+        t = str(t).strip()[:MAX_TAG_LENGTH]
+        if t:
+            cleaned.append(t)
+    return cleaned
+
+
+@router.put("/pool/{skill_name}/tags")
+async def update_pool_skill_tags(
+    skill_name: str,
+    tags: list[str],
+) -> dict[str, Any]:
+    tags = _validate_tags(tags)
+    updated = SkillPoolService().set_pool_skill_tags(skill_name, tags)
+    if not updated:
+        raise HTTPException(
+            status_code=404,
+            detail="Pool skill not found",
+        )
+    return {"updated": True, "tags": tags}
 
 
 @router.post("/batch-delete")
@@ -1277,11 +1319,10 @@ async def delete_skill(
     return {"deleted": True}
 
 
-@router.get("/{skill_name}/files/{source}/{file_path:path}")
+@router.get("/{skill_name}/files/{file_path:path}")
 async def load_skill_file(
     request: Request,
     skill_name: str,
-    source: str,
     file_path: str,
 ) -> dict[str, Any]:
     """Load a file under references/ or scripts/ for a skill."""
@@ -1289,7 +1330,6 @@ async def load_skill_file(
     content = SkillService(workspace_dir).load_skill_file(
         skill_name=skill_name,
         file_path=file_path,
-        source=source,
     )
     if content is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -1311,12 +1351,10 @@ async def save_workspace_skill(
             content=body.content,
             target_name=body.name if body.source_name else None,
             config=body.config,
-            references=body.references,
-            scripts=body.scripts,
         )
     except SkillScanError as exc:
         return _scan_error_response(exc)
-    except ValueError as exc:
+    except (ValueError, AppBaseException) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result.get("success"):
         if result.get("reason") == "conflict":
@@ -1345,6 +1383,26 @@ async def update_skill_channels_endpoint(
         raise HTTPException(status_code=404, detail="Skill not found")
     schedule_agent_reload(request, workspace.agent_id)
     return {"updated": True, "channels": channels}
+
+
+@router.put("/{skill_name}/tags")
+async def update_skill_tags(
+    request: Request,
+    skill_name: str,
+    tags: list[str],
+) -> dict[str, Any]:
+    from ..agent_context import get_agent_for_request
+
+    tags = _validate_tags(tags)
+    workspace = await get_agent_for_request(request)
+    workspace_dir = Path(workspace.workspace_dir)
+    updated = SkillService(workspace_dir).set_skill_tags(
+        skill_name,
+        tags,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return {"updated": True, "tags": tags}
 
 
 @router.get("/{skill_name}/config")

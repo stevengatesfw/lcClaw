@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Skill security scanner for CoPaw.
+Skill security scanner for lcClaw.
 
 Scans skills for security threats before they are activated or installed.
 

@@ -9,6 +9,10 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
+from agentscope_runtime.engine.schemas.exception import (
+    ConfigurationException,
+)
+
 from .workspace import Workspace
 from ..config.utils import (
     copaw_storage_isolation_enabled,
@@ -59,7 +63,7 @@ class MultiAgentManager:
             Workspace: The requested workspace instance
 
         Raises:
-            ValueError: If agent ID not found in configuration
+            ConfigurationException: If agent ID not found in configuration
         """
         if config_path is None:
             config_path = get_config_path()
@@ -77,9 +81,13 @@ class MultiAgentManager:
             config = load_config(config_path)
 
             if agent_id not in config.agents.profiles:
-                raise ValueError(
-                    f"Agent '{agent_id}' not found in configuration. "
-                    f"Available agents: {list(config.agents.profiles.keys())}",
+                raise ConfigurationException(
+                    config_key="agent",
+                    message=(
+                        f"Agent '{agent_id}' not found in configuration. "
+                        f"Available agents: "
+                        f"{list(config.agents.profiles.keys())}"
+                    ),
                 )
 
             agent_ref = config.agents.profiles[agent_id]
@@ -88,6 +96,7 @@ class MultiAgentManager:
             instance = Workspace(
                 agent_id=agent_id,
                 workspace_dir=agent_ref.workspace_dir,
+                root_config_path=config_path,
             )
 
             try:
@@ -290,6 +299,7 @@ class MultiAgentManager:
         new_instance = Workspace(
             agent_id=agent_id,
             workspace_dir=agent_ref.workspace_dir,
+            root_config_path=config_path,
         )
 
         # Step 3.5: Set reusable components from old instance (if any)

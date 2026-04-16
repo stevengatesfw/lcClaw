@@ -2,10 +2,13 @@
 import os
 import json
 from pathlib import Path
-from typing import Optional, Union, Dict, List, Literal
+from typing import Optional, Union, Dict, List, Literal, Any
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 import shortuuid
+from agentscope_runtime.engine.schemas.exception import (
+    ConfigurationException,
+)
 
 from .timezone import detect_system_timezone
 from ..constant import (
@@ -95,6 +98,15 @@ class QQConfig(BaseChannelConfig):
     max_reconnect_attempts: int = 100
 
 
+class OneBotConfig(BaseChannelConfig):
+    """OneBot v11 channel: reverse WebSocket for NapCat/go-cqhttp/Lagrange."""
+
+    ws_host: str = "0.0.0.0"
+    ws_port: int = 6199
+    access_token: str = ""
+    share_session_in_group: bool = False
+
+
 class TelegramConfig(BaseChannelConfig):
     bot_token: str = ""
     http_proxy: str = ""
@@ -164,7 +176,7 @@ class VoiceChannelConfig(BaseChannelConfig):
     tts_voice: str = "en-US-Journey-D"
     stt_provider: str = "deepgram"
     language: str = "en-US"
-    welcome_greeting: str = "Hi! This is CoPaw. How can I help you?"
+    welcome_greeting: str = "Hi! This is lcClaw. How can I help you?"
 
 
 class XiaoYiConfig(BaseChannelConfig):
@@ -212,6 +224,7 @@ class ChannelConfig(BaseModel):
     wecom: WecomConfig = WecomConfig()
     xiaoyi: XiaoYiConfig = XiaoYiConfig()
     weixin: WeixinConfig = WeixinConfig()
+    onebot: OneBotConfig = OneBotConfig()
 
 
 class LastApiConfig(BaseModel):
@@ -409,6 +422,15 @@ class MemorySummaryConfig(BaseModel):
         ),
     )
 
+    force_memory_search_timeout: float = Field(
+        default=10.0,
+        gt=0.0,
+        description=(
+            "Timeout in seconds for force memory search. Increase this value"
+            " when using remote embedding APIs that may have higher latency."
+        ),
+    )
+
     rebuild_memory_index_on_start: bool = Field(
         default=False,
         description=(
@@ -508,9 +530,12 @@ class AgentsRunningConfig(BaseModel):
     def validate_llm_retry_backoff(self) -> "AgentsRunningConfig":
         """Validate LLM retry backoff relationships."""
         if self.llm_backoff_cap < self.llm_backoff_base:
-            raise ValueError(
-                "llm_backoff_cap must be greater than or equal to "
-                "llm_backoff_base",
+            raise ConfigurationException(
+                config_key="llm_backoff",
+                message=(
+                    "llm_backoff_cap must be greater than or equal to "
+                    "llm_backoff_base"
+                ),
             )
         return self
 
@@ -684,6 +709,10 @@ class AgentsConfig(BaseModel):
         default="default",
         description="Currently active agent ID",
     )
+    agent_order: List[str] = Field(
+        default_factory=lambda: ["default"],
+        description="Persisted UI order for configured agents",
+    )
     profiles: Dict[str, AgentProfileRef] = Field(
         default_factory=lambda: {
             "default": AgentProfileRef(
@@ -819,12 +848,16 @@ class MCPClientConfig(BaseModel):
         """Validate required fields for each MCP transport type."""
         if self.transport == "stdio":
             if not self.command.strip():
-                raise ValueError("stdio MCP client requires non-empty command")
+                raise ConfigurationException(
+                    config_key="mcp.command",
+                    message="stdio MCP client requires non-empty command",
+                )
             return self
 
         if not self.url.strip():
-            raise ValueError(
-                f"{self.transport} MCP client requires non-empty url",
+            raise ConfigurationException(
+                config_key="mcp.url",
+                message=f"{self.transport} MCP client requires non-empty url",
             )
         return self
 
@@ -864,6 +897,10 @@ class BuiltinToolConfig(BaseModel):
         False,
         description="Whether to execute the tool asynchronously in background",
     )
+    icon: str | None = Field(
+        default=None,
+        description="Emoji icon for the tool",
+    )
 
 
 def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
@@ -873,73 +910,90 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             name="execute_shell_command",
             enabled=True,
             description="Execute shell commands",
+            icon="💻",
         ),
         "read_file": BuiltinToolConfig(
             name="read_file",
             enabled=True,
             description="Read file contents",
+            icon="📄",
         ),
         "write_file": BuiltinToolConfig(
             name="write_file",
             enabled=True,
             description="Write content to file",
+            icon="✍️",
         ),
         "edit_file": BuiltinToolConfig(
             name="edit_file",
             enabled=True,
             description="Edit file using find-and-replace",
+            icon="🖊️",
         ),
         "grep_search": BuiltinToolConfig(
             name="grep_search",
             enabled=True,
             description="Search file contents by pattern",
+            icon="🔍",
         ),
         "glob_search": BuiltinToolConfig(
             name="glob_search",
             enabled=True,
             description="Find files matching a glob pattern",
+            icon="📁",
         ),
         "browser_use": BuiltinToolConfig(
             name="browser_use",
             enabled=True,
             description="Browser automation and web interaction",
+            icon="🌐",
         ),
         "desktop_screenshot": BuiltinToolConfig(
             name="desktop_screenshot",
             enabled=True,
             description="Capture desktop screenshots",
+            icon="📸",
         ),
         "view_image": BuiltinToolConfig(
             name="view_image",
             enabled=True,
             description="Load an image into LLM context for visual analysis",
             display_to_user=False,
+            icon="🖼️",
         ),
         "view_video": BuiltinToolConfig(
             name="view_video",
             enabled=True,
             description="Load a video into LLM context for visual analysis",
             display_to_user=False,
+            icon="🎥",
         ),
         "send_file_to_user": BuiltinToolConfig(
             name="send_file_to_user",
             enabled=True,
-            description="Send files to user",
+            description=(
+                "Send files to user: local path, http(s) URL, or LCAgent paths "
+                "/app/upload/… /tmp/… when using LCAgent lcClaw proxy"
+            ),
+            icon="📤",
         ),
         "get_current_time": BuiltinToolConfig(
             name="get_current_time",
             enabled=True,
             description="Get current date and time",
+            icon="🕐",
         ),
         "set_user_timezone": BuiltinToolConfig(
             name="set_user_timezone",
             enabled=True,
             description="Set user timezone",
+            icon="🌍",
         ),
         "get_token_usage": BuiltinToolConfig(
             name="get_token_usage",
             enabled=True,
             description="Get llm token usage",
+            icon="📊",
         ),
     }
 
@@ -957,6 +1011,8 @@ class ToolsConfig(BaseModel):
         for name, tc in _default_builtin_tools().items():
             if name not in self.builtin_tools:
                 self.builtin_tools[name] = tc
+            elif self.builtin_tools[name].icon is None:
+                self.builtin_tools[name].icon = tc.icon
         return self
 
 
@@ -1083,6 +1139,11 @@ class Config(BaseModel):
         description="User IANA timezone (e.g. Asia/Shanghai). "
         "Defaults to the system timezone.",
     )
+    plugins: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Plugin configurations. Key is plugin_id, "
+        "value is plugin-specific config dict.",
+    )
 
 
 ChannelConfigUnion = Union[
@@ -1112,6 +1173,11 @@ def load_agent_config(
 ) -> AgentProfileConfig:
     """Load agent's complete configuration from workspace/agent.json.
 
+    When storage isolation is enabled and ``config_path`` points at a
+    per-tenant root (``users/<uid>/config.json``), the ``channels`` section
+    from that file replaces any channel settings read from shared
+    ``workspace/.../agent.json`` so credentials are tenant-scoped.
+
     Args:
         agent_id: Agent ID to load
         config_path: Root ``config.json`` (default: global ``get_config_path()``).
@@ -1127,7 +1193,10 @@ def load_agent_config(
     config = load_config(config_path)
 
     if agent_id not in config.agents.profiles:
-        raise ValueError(f"Agent '{agent_id}' not found in config")
+        raise ConfigurationException(
+            config_key="agent",
+            message=f"Agent '{agent_id}' not found in config",
+        )
 
     agent_ref = config.agents.profiles[agent_id]
     workspace_dir = Path(agent_ref.workspace_dir).expanduser()
@@ -1194,7 +1263,17 @@ def load_agent_config(
     except Exception:
         pass
 
-    return AgentProfileConfig(**data)
+    profile = AgentProfileConfig(**data)
+    # Per-tenant channel credentials (DingTalk, etc.): users/<uid>/config.json
+    # is authoritative over shared workspace agent.json when isolated.
+    from .utils import copaw_storage_isolation_enabled, is_tenant_storage_config_path
+
+    if copaw_storage_isolation_enabled() and is_tenant_storage_config_path(
+        config_path,
+    ):
+        profile.channels = config.channels.model_copy(deep=True)
+
+    return profile
 
 
 def save_agent_config(
@@ -1217,7 +1296,10 @@ def save_agent_config(
     config = load_config(config_path)
 
     if agent_id not in config.agents.profiles:
-        raise ValueError(f"Agent '{agent_id}' not found in config")
+        raise ConfigurationException(
+            config_key="agent",
+            message=f"Agent '{agent_id}' not found in config",
+        )
 
     agent_ref = config.agents.profiles[agent_id]
     workspace_dir = Path(agent_ref.workspace_dir).expanduser()
@@ -1269,7 +1351,7 @@ def migrate_legacy_config_to_multi_agent() -> bool:
     default_agent_config = AgentProfileConfig(
         id="default",
         name="Default Agent",
-        description="Default CoPaw agent",
+        description="Default lcClaw agent",
         workspace_dir=str(default_workspace),
         channels=config.channels if config.channels else None,
         mcp=config.mcp if config.mcp else None,

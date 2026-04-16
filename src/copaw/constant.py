@@ -175,6 +175,9 @@ USERS_DIR = WORKING_DIR / "users"
 # loads BaseChannel subclasses from here.
 CUSTOM_CHANNELS_DIR = WORKING_DIR / "custom_channels"
 
+# Plugin directory (installed via `copaw plugin install`)
+PLUGINS_DIR = WORKING_DIR / "plugins"
+
 # Local models directory
 MODELS_DIR = WORKING_DIR / "models"
 

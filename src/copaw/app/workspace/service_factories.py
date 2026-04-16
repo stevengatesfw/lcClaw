@@ -191,12 +191,15 @@ async def create_agent_config_watcher(ws: "Workspace", _):
         return None
 
     from ..agent_config_watcher import AgentConfigWatcher
+    from ...config.utils import copaw_storage_isolation_enabled
 
     watcher = AgentConfigWatcher(
         agent_id=ws.agent_id,
         workspace_dir=ws.workspace_dir,
         channel_manager=channel_mgr,
         cron_manager=cron_mgr,
+        storage_isolation_enabled=copaw_storage_isolation_enabled(),
+        root_config_path=getattr(ws, "_root_config_path", None),
     )
     ws._service_manager.services["agent_config_watcher"] = watcher
     return watcher
@@ -222,7 +225,10 @@ async def create_mcp_config_watcher(ws: "Workspace", _):
     from ...config.config import load_agent_config
 
     def mcp_config_loader():
-        agent_config = load_agent_config(ws.agent_id)
+        agent_config = load_agent_config(
+            ws.agent_id,
+            config_path=getattr(ws, "_root_config_path", None),
+        )
         return agent_config.mcp
 
     watcher = MCPConfigWatcher(

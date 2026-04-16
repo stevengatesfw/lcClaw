@@ -58,7 +58,7 @@ async def get_agent_for_request(
         target_agent_id = request.headers.get("X-Agent-Id")
 
     config_path = get_request_config_path(request)
-    ensure_tenant_default_agent(config_path)
+    config_saved = ensure_tenant_default_agent(config_path)
 
     # Load config once for fallback and validation
     config = None
@@ -91,6 +91,9 @@ async def get_agent_for_request(
         )
 
     manager: MultiAgentManager = request.app.state.multi_agent_manager
+
+    if config_saved:
+        await manager.reload_agent("default", config_path=config_path)
 
     try:
         workspace = await manager.get_agent(

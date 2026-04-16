@@ -33,6 +33,7 @@ class ToolInfo(BaseModel):
         default=False,
         description="Whether to execute the tool asynchronously in background",
     )
+    icon: str = Field(default="🔧", description="Emoji icon for the tool")
 
 
 @router.get("", response_model=List[ToolInfo])
@@ -73,6 +74,7 @@ async def list_tools(
                 enabled=tool_config.enabled,
                 description=tool_config.description,
                 async_execution=tool_config.async_execution,
+                icon=tool_config.icon,
             ),
         )
 
@@ -135,6 +137,7 @@ async def toggle_tool(
         enabled=tool_config.enabled,
         description=tool_config.description,
         async_execution=tool_config.async_execution,
+        icon=tool_config.icon,
     )
 
 
@@ -196,4 +199,5 @@ async def update_tool_async_execution(
         enabled=tool_config.enabled,
         description=tool_config.description,
         async_execution=tool_config.async_execution,
+        icon=tool_config.icon,
     )

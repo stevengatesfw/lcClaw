@@ -6,6 +6,7 @@ import logging
 import os
 import plistlib
 import shutil
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -683,6 +684,28 @@ def copaw_storage_isolation_enabled() -> bool:
     return bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
 
+def is_tenant_storage_config_path(config_path: Optional[Path]) -> bool:
+    """True if ``config_path`` is not the global working-dir ``config.json``.
+
+    Per-tenant roots live at ``users/<uid>/config.json``. When this returns
+    True and storage isolation is enabled, :func:`load_agent_config` applies
+    ``channels`` from that file over shared ``workspace/.../agent.json``.
+
+    Treat channel secrets like any other credential: rotate if exposed and
+    prefer env/K8s secrets over long-lived plaintext in JSON when possible.
+    """
+    if config_path is None:
+        return False
+    try:
+        left = config_path.expanduser().resolve()
+        right = get_config_path().expanduser().resolve()
+    except OSError:
+        return os.path.normcase(str(config_path)) != os.path.normcase(
+            str(get_config_path()),
+        )
+    return left != right
+
+
 def get_config_path_for_user(user_id: Optional[str]) -> Path:
     """Per-user config.json under users/<user_id>/ (same layout as chats)."""
     return (get_user_working_dir(user_id) / CONFIG_FILE).expanduser()
@@ -726,3 +749,40 @@ def iter_user_config_paths() -> list[tuple[str, Path]]:
         if cp.is_file():
             out.append((child.name, cp))
     return out
+
+
+def get_plugins_dir() -> Path:
+    """Return plugins directory path."""
+    from ..constant import PLUGINS_DIR
+
+    return PLUGINS_DIR
+
+
+def is_copaw_running() -> bool:
+    """Check if lcClaw is currently running by checking API availability.
+
+    Returns:
+        True if lcClaw is running, False otherwise
+    """
+    try:
+        # Read last API host/port
+        api_info = read_last_api()
+        if not api_info:
+            return False
+
+        host, port = api_info
+
+        # Try to connect to the API
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)  # 1 second timeout
+
+        try:
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0  # 0 means connection successful
+        except Exception:
+            sock.close()
+            return False
+
+    except Exception:
+        return False

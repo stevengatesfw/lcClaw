@@ -13,6 +13,7 @@ All existing single-agent components are reused without modification.
 import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+from agentscope_runtime.engine.schemas.exception import ConfigurationException
 
 from .service_manager import ServiceDescriptor, ServiceManager
 from .service_factories import (
@@ -41,7 +42,9 @@ def _resolve_memory_class(backend: str) -> type:
 
     if backend == "remelight":
         return ReMeLightMemoryManager
-    raise ValueError(f"Unsupported memory manager backend: '{backend}'")
+    raise ConfigurationException(
+        message=f"Unsupported memory manager backend: '{backend}'",
+    )
 
 
 class Workspace:
@@ -57,16 +60,25 @@ class Workspace:
     All components use existing single-agent code without modification.
     """
 
-    def __init__(self, agent_id: str, workspace_dir: str):
+    def __init__(
+        self,
+        agent_id: str,
+        workspace_dir: str,
+        root_config_path: Optional[Path] = None,
+    ):
         """Initialize agent instance.
 
         Args:
             agent_id: Unique agent identifier
             workspace_dir: Path to agent's workspace directory
+            root_config_path: Root ``config.json`` for this scope (global or
+                ``users/<uid>/config.json``); must match
+                :class:`MultiAgentManager` cache key for tenant isolation.
         """
         self.agent_id = agent_id
         self.workspace_dir = Path(workspace_dir).expanduser()
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self._root_config_path = root_config_path
 
         # Service manager (unified component management)
         self._service_manager = ServiceManager(self)
@@ -125,7 +137,10 @@ class Workspace:
     def config(self):
         """Get agent configuration."""
         if self._config is None:
-            self._config = load_agent_config(self.agent_id)
+            self._config = load_agent_config(
+                self.agent_id,
+                config_path=self._root_config_path,
+            )
         return self._config
 
     def set_manager(self, manager) -> None:
@@ -340,7 +355,10 @@ class Workspace:
 
         try:
             # 1. Load agent configuration
-            self._config = load_agent_config(self.agent_id)
+            self._config = load_agent_config(
+                self.agent_id,
+                config_path=self._root_config_path,
+            )
             logger.debug(f"Loaded config for agent: {self.agent_id}")
 
             # 2. Start all services via ServiceManager

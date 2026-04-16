@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CoPaw Agent - Main agent implementation.
+"""lcClaw agent - Main agent implementation.
 
 This module provides the main CoPawAgent class built on ReActAgent,
 with integrated tools, skills, and memory management.
@@ -8,17 +8,18 @@ with integrated tools, skills, and memory management.
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, List, Literal, Optional, Type, TYPE_CHECKING
 
 from agentscope.agent import ReActAgent
-from agentscope.mcp import HttpStatefulClient, StdIOStatefulClient
 from agentscope.memory import InMemoryMemory
 from agentscope.message import Msg
 from agentscope.tool import Toolkit
 from anyio import ClosedResourceError
 from pydantic import BaseModel
 
+from ..app.mcp import HttpStatefulClient, StdIOStatefulClient
 from .command_handler import CommandHandler
 from .hooks import BootstrapHook, MemoryCompactionHook
 from .model_factory import create_model_and_formatter
@@ -76,7 +77,7 @@ def _is_duplicate_agent_skill_error(exc: BaseException) -> bool:
 
 
 class CoPawAgent(ToolGuardMixin, ReActAgent):
-    """CoPaw Agent with integrated tools, skills, and memory management.
+    """lcClaw agent with integrated tools, skills, and memory management.
 
     This agent extends ReActAgent with:
     - Built-in tools (shell, file operations, browser, etc.)
@@ -110,7 +111,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         workspace_dir: Path | None = None,
         task_tracker: Any | None = None,
     ):
-        """Initialize CoPawAgent.
+        """Initialize the lcClaw agent (class ``CoPawAgent``).
 
         Args:
             agent_config: Agent profile configuration containing all settings
@@ -145,9 +146,16 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         self._language = agent_config.language
 
         # Initialize toolkit with built-in tools
+        _t_toolkit = time.perf_counter()
         toolkit = self._create_toolkit(
             namesake_strategy=namesake_strategy,
             enable_agent_mode=self._enable_agent_mode,
+        )
+        _create_toolkit_ms = (time.perf_counter() - _t_toolkit) * 1000.0
+        logger.info(
+            "lcClaw agent construct timing: create_toolkit_ms=%.1f enable_skills=%s",
+            _create_toolkit_ms,
+            self._enable_skills,
         )
 
         # Load and register skills
@@ -155,7 +163,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             self._register_skills(toolkit)
 
         logger.info(
-            "CoPawAgent feature flags: enable_agent_mode=%s enable_skills=%s",
+            "lcClaw agent feature flags: enable_agent_mode=%s enable_skills=%s",
             self._enable_agent_mode,
             self._enable_skills,
         )
@@ -173,12 +181,15 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             model, formatter = create_model_and_formatter(
                 agent_id=agent_config.id,
             )
-        model_info = (
-            f"{agent_config.active_model.provider_id}/"
-            f"{agent_config.active_model.model}"
-            if agent_config.active_model
-            else "global-fallback"
-        )
+        if llm_cfg is not None:
+            model_info = f"lcagent-resolved/{llm_cfg.model or 'default'}"
+        elif agent_config.active_model:
+            model_info = (
+                f"{agent_config.active_model.provider_id}/"
+                f"{agent_config.active_model.model}"
+            )
+        else:
+            model_info = "global-fallback"
         logger.info(
             "Agent '%s' initialized with model: %s (class: %s)",
             agent_config.id,
@@ -360,21 +371,27 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         """
         workspace_dir = self._workspace_dir or WORKING_DIR
 
+        _t0 = time.perf_counter()
         ensure_skills_initialized(workspace_dir)
+        _ensure_ms = (time.perf_counter() - _t0) * 1000.0
 
         request_context = getattr(self, "_request_context", {})
         channel_name = request_context.get("channel", "console")
 
+        _t1 = time.perf_counter()
         effective_skills = resolve_effective_skills(
             workspace_dir,
             channel_name,
+            reconcile_manifest=False,
         )
+        _resolve_ms = (time.perf_counter() - _t1) * 1000.0
 
         working_skills_dir = get_workspace_skills_dir(Path(workspace_dir))
 
         # Drop duplicate folder names while preserving order (manifest edge cases).
         seen_folders: list[str] = list(dict.fromkeys(effective_skills))
 
+        _t2 = time.perf_counter()
         for skill_name in seen_folders:
             skill_dir = working_skills_dir / skill_name
             if skill_dir.exists():
@@ -395,6 +412,19 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                         skill_name,
                         e,
                     )
+        _register_ms = (time.perf_counter() - _t2) * 1000.0
+
+        logger.info(
+            "lcClaw agent skill registration timing: "
+            "ensure_skills_initialized_ms=%.1f resolve_effective_skills_ms=%.1f "
+            "register_agent_skills_ms=%.1f skill_count=%d workspace_dir=%s "
+            "ops_hint=second_request|enable_skills_false|PVC_IO",
+            _ensure_ms,
+            _resolve_ms,
+            _register_ms,
+            len(seen_folders),
+            workspace_dir,
+        )
 
     def _build_sys_prompt(self) -> str:
         """Build system prompt from working dir files and env context.
@@ -1041,7 +1071,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             return msg
 
         # Normal message processing
-        logger.info("CoPawAgent.reply: max_iters=%s", self.max_iters)
+        logger.info("lcClaw agent reply: max_iters=%s", self.max_iters)
 
         if hasattr(self.memory, "_long_term_memory"):
             running = self._agent_config.running
@@ -1058,7 +1088,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                             max_results=ms.force_max_results,
                             min_score=ms.force_min_score,
                         ),
-                        timeout=1,
+                        timeout=ms.force_memory_search_timeout,
                     )
                     self.memory._long_term_memory = "\n".join(
                         block["text"]

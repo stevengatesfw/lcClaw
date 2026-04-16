@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Authentication: optional CoPaw login + LCAgent JWT for tenant isolation.
+"""Authentication: optional lcClaw login + LCAgent JWT for tenant isolation.
 
 When ``LAZY_PLATFORM_KEY`` is set, HS256 JWT from the LCAgent ``Authorization``
 header is verified and ``user_id`` is extracted for per-user storage isolation.
 
-CoPaw's own login (``COPAW_AUTH_ENABLED``) uses HMAC-signed tokens in
+lcClaw's own login (``COPAW_AUTH_ENABLED``) uses HMAC-signed tokens in
 ``auth.json`` and is orthogonal to LCAgent JWT.
 """
 from __future__ import annotations
@@ -23,6 +23,12 @@ from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ..constant import SECRET_DIR
+from ..security.secret_store import (
+    AUTH_SECRET_FIELDS,
+    decrypt_dict_fields,
+    encrypt_dict_fields,
+    is_encrypted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +169,32 @@ def _load_auth_data() -> dict:
     Returns the parsed dict, or a sentinel with ``_auth_load_error``
     set to ``True`` when the file exists but cannot be read/parsed so
     that callers can fail closed instead of silently bypassing auth.
+
+    Encrypted fields (``jwt_secret``) are transparently decrypted.
+    Legacy plaintext values trigger an automatic re-encryption.
     """
     if AUTH_FILE.is_file():
         try:
-            with open(AUTH_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with open(AUTH_FILE, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+
+            needs_rewrite = any(
+                isinstance(data.get(field), str)
+                and data.get(field)
+                and not is_encrypted(data[field])
+                for field in AUTH_SECRET_FIELDS
+            )
+            data = decrypt_dict_fields(data, AUTH_SECRET_FIELDS)
+            if needs_rewrite:
+                try:
+                    _save_auth_data(data)
+                except Exception as enc_err:
+                    logger.debug(
+                        "Deferred plaintext→encrypted migration for"
+                        " auth.json: %s",
+                        enc_err,
+                    )
+            return data
         except (json.JSONDecodeError, OSError) as exc:
             logger.error("Failed to load auth file %s: %s", AUTH_FILE, exc)
             return {"_auth_load_error": True}
@@ -175,10 +202,14 @@ def _load_auth_data() -> dict:
 
 
 def _save_auth_data(data: dict) -> None:
-    """Save ``auth.json`` to ``SECRET_DIR`` with restrictive permissions."""
+    """Save ``auth.json`` to ``SECRET_DIR`` with restrictive permissions.
+
+    Sensitive fields (``jwt_secret``) are encrypted before writing.
+    """
     _prepare_secret_parent(AUTH_FILE)
+    encrypted_data = encrypt_dict_fields(data, AUTH_SECRET_FIELDS)
     with open(AUTH_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(encrypted_data, f, indent=2, ensure_ascii=False)
     _chmod_best_effort(AUTH_FILE, 0o600)
 
 
@@ -394,14 +425,14 @@ def get_current_user_id_required(request: Request) -> str:
     if not auth:
         raise HTTPException(
             status_code=401,
-            detail="请先登录 LCAgent 后再使用 CoPaw。",
+            detail="请先登录 LCAgent 后再使用 lcClaw。",
         )
 
     user_id = verify_lcagent_token(auth)
     if not user_id:
         raise HTTPException(
             status_code=401,
-            detail="请先登录 LCAgent 后再使用 CoPaw。",
+            detail="请先登录 LCAgent 后再使用 lcClaw。",
         )
     return user_id
 
@@ -491,7 +522,7 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
             reset_request_authorization()
             return JSONResponse(
                 status_code=401,
-                content={"detail": "请先登录 LCAgent 后再使用 CoPaw。"},
+                content={"detail": "请先登录 LCAgent 后再使用 lcClaw。"},
             )
         data["user_id"] = user_id
 
@@ -510,7 +541,7 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
 
 
 # ---------------------------------------------------------------------------
-# FastAPI middleware (CoPaw local auth)
+# FastAPI middleware (lcClaw local auth)
 # ---------------------------------------------------------------------------
 
 
@@ -533,6 +564,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if lc_uid:
                 request.state.user = lc_uid
                 return await call_next(request)
+            # <img>/<video> cannot send Authorization; same JWT may appear as ?token=
+            q_tok = request.query_params.get("token")
+            if q_tok:
+                lc_uid_q = verify_lcagent_token(q_tok)
+                if lc_uid_q:
+                    request.state.user = lc_uid_q
+                    return await call_next(request)
 
         token = self._extract_token(request)
         if not token:
@@ -595,6 +633,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 
 logger.info(
-    "CoPaw auth: LAZY_PLATFORM_KEY configured=%s",
+    "lcClaw auth: LAZY_PLATFORM_KEY configured=%s",
     bool(_get_platform_key()),
 )

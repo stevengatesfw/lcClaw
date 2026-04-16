@@ -58,6 +58,21 @@
 
 ## ニュース
 
+[2026-04-09] v1.0.2 をリリースしました。詳細は [v1.0.2 リリースノート](https://agentscope-ai.github.io/CoPaw/release-notes)をご覧ください。
+
+- **[v1.0.2] 追加:** プラグイン対応; Web UI なしで `copaw task` を実行; チャットで `/model` によりモデル切り替え; SiliconFlow プロバイダー; CoPaw Local のマルチモーダル対応とコンソール設定の拡充; 機微な認証情報の暗号化; `/skills` と `/<スキル名>` でスキル一覧と実行指定; スキルプールのタグ。
+- **[v1.0.2] 変更:** タイムゾーン名が UI 言語に追随; 設定画面のオンデマンド読み込み; 大規模スキルリストの操作がより滑らかに; プロバイダー接続テストの文言をローカライズ; 各チャットチャネル・HTTP API・CLI でエラーコードをより統一。
+- **[v1.0.2] 修正:** MCP クライアント切断・再接続後の CPU 異常; 重複要素がある DOM でのブラウザ自動化とドキュメント; シェルツールで引用符内の改行を保持。
+- **[v1.0.2] 貢献者:** 新規貢献者のみなさまに感謝します: [@energyd](https://github.com/energyd)、[@fengrui-z](https://github.com/fengrui-z)、[@alostbear](https://github.com/alostbear)、[@chr6192](https://github.com/chr6192)、[@yyyzl](https://github.com/yyyzl)。
+
+[2026-04-04] v1.0.1をリリースしました！詳細は [v1.0.1 リリースノート](https://agentscope-ai.github.io/CoPaw/release-notes)でご確認ください。
+
+- **[v1.0.1] 追加:** Zhipu AI モデルサポート; マルチモーダルモデルの動画分析; モデルごとの生成パラメータ設定; CoPaw Local 自動更新; OneBot v11 チャネル（NapCat/QQ）; エージェントドラッグ&ドロップ並び替え; スキル一括操作; WeChat ファイルアップロードと入力中表示改善; 手動コンパクトの追加指示。
+- **[v1.0.1] 変更:** Web サイト UI 刷新; スキルカードとリスト表示の強化; MCP コンソール UI 改善。
+- **[v1.0.1] 修正:** DingTalk sessionWebhook と許可リスト処理; WeCom WebSocket 信頼性; QQ 再接続状態; コンソール UI 修正; Windows ツール互換性; ブラウザアイドルウォッチドッグ; シンキングモデルでのツールガード; llama.cpp Windows NVIDIA GPU サポート。
+- **[v1.0.1] ドキュメント:** CoPaw-Flash 展開 FAQ; スキルドキュメント更新。
+- **[v1.0.1] 貢献者:** 新規貢献者の皆さんに感謝します: [@Jacky51351684](https://github.com/Jacky51351684)、[@xianzhisheng](https://github.com/xianzhisheng)、[@kobewl](https://github.com/kobewl)、[@rikey123](https://github.com/rikey123)、[@solarhell](https://github.com/solarhell)。
+
 [2026-03-30] v1.0.0をリリースしました！詳細は [v1.0.0 リリースノート](https://agentscope-ai.github.io/CoPaw/release-notes)でご確認ください。
 
 - **[v1.0.0] 追加:**
@@ -408,6 +423,7 @@ CoPaw は多層セキュリティ防護メカニズムを内蔵し、データ�
 - **ファイルアクセスガード** — エージェントが機密パス（`~/.ssh`、鍵ファイル、システムディレクトリなど）にアクセスするのを制限
 - **スキルセキュリティスキャン** — スキルインストール前に自動スキャンし、プロンプトインジェクション、コマンドインジェクション、ハードコードされた鍵、データ漏洩などのリスクを検出
 - **ローカル展開** — すべてのデータとメモリはローカルに保存され、サードパーティへのアップロードなし（クラウド LLM API 使用時は、対話内容は対応する API プロバイダーに送信されます）
+- **Web 認証** — コンソールへのオプションのログイン保護。デフォルトで無効；`COPAW_AUTH_ENABLED=true` に設定することで有効化できます。詳細は [Web 認証](https://copaw.agentscope.io/docs/security#Web-Authentication) を参照してください。
 
 詳細は[セキュリティドキュメント](https://copaw.agentscope.io/docs/security)を参照してください。
 

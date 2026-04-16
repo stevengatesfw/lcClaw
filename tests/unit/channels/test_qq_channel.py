@@ -14,6 +14,7 @@ from agentscope_runtime.engine.schemas.agent_schemas import (
     TextContent,
 )
 
+from copaw.exceptions import ChannelError
 from copaw.app.channels.qq.channel import (
     QQApiError,
     QQChannel,
@@ -364,6 +365,26 @@ class TestHandleWsPayload:
         assert result is None
         assert state.session_id == "new_sess"
         assert state.last_seq == 1
+
+    def test_dispatch_resumed_resets_reconnect_state(self):
+        ch, ws, state, hb = self._make_deps()
+        state.identify_fail_count = 2
+        state.reconnect_attempts = 5
+        state.last_connect_time = 1.0
+        payload = {
+            "op": OP_DISPATCH,
+            "d": {},
+            "s": 7,
+            "t": "RESUMED",
+        }
+        before = time.time()
+        result = ch._handle_ws_payload(payload, ws, "tok", state, hb)
+        after = time.time()
+        assert result is None
+        assert state.identify_fail_count == 0
+        assert state.reconnect_attempts == 0
+        assert before <= state.last_connect_time <= after
+        assert state.last_seq == 7
 
     def test_dispatch_message_calls_handle_msg_event(self):
         ch, ws, state, hb = self._make_deps()
@@ -998,7 +1019,7 @@ class TestLifecycle:
 
     async def test_start_missing_credentials(self):
         ch = _make_channel(app_id="", client_secret="")
-        with pytest.raises(RuntimeError, match="QQ_APP_ID"):
+        with pytest.raises(ChannelError, match="QQ_APP_ID"):
             await ch.start()
 
     async def test_stop_disabled_noop(self):

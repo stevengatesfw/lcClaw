@@ -9,7 +9,12 @@ import api, {
   type ChatStatus,
   type Message,
 } from "../../../api";
-import { toDisplayUrl } from "../utils";
+import {
+  collectToolOutputImagesAndRewriteOutput,
+  extractMarkdownImageUrls,
+  stripMarkdownImageSyntax,
+  toDisplayUrl,
+} from "../utils";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -76,6 +81,8 @@ interface ExtendedSession extends IAgentScopeRuntimeWebUISession {
   createdAt?: string | null;
   /** Whether the backend is still generating a response for this session. */
   generating?: boolean;
+  /** Whether the chat is pinned to the top. */
+  pinned?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +111,21 @@ function resolveContentItemUrl(c: ContentItem): ContentItem {
   if (c.type === "audio" && c.data) {
     return { ...c, data: toDisplayUrl(c.data as string) };
   }
-  if (c.type === "video" && c.video_url) {
-    return { ...c, video_url: toDisplayUrl(c.video_url as string) };
+  if (c.type === "video") {
+    let raw =
+      typeof c.video_url === "string" ? (c.video_url as string).trim() : "";
+    if (!raw && c.source && typeof c.source === "object") {
+      const src = c.source as { type?: string; url?: string };
+      if (
+        String(src.type || "").toLowerCase() === "url" &&
+        typeof src.url === "string"
+      ) {
+        raw = src.url.trim();
+      }
+    }
+    if (!raw) return c;
+    const display = toDisplayUrl(raw);
+    return { ...c, video_url: display, source: { type: "url", url: display } };
   }
   if (c.type === "file" && (c.file_url || c.file_id)) {
     return {
@@ -140,7 +160,53 @@ function contentToRequestParts(
 function normalizeOutputMessageContent(content: unknown): unknown {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content;
-  return (content as ContentItem[]).map(resolveContentItemUrl);
+  const items = content as ContentItem[];
+  const resolved: ContentItem[] = [];
+  const extraImages: ContentItem[] = [];
+
+  for (const c of items) {
+    if (c.type === "data" && c.data && typeof c.data === "object") {
+      const data = c.data as Record<string, unknown>;
+      if ("output" in data) {
+        const { imageUrls, displayOutput } =
+          collectToolOutputImagesAndRewriteOutput(data.output);
+        const newData =
+          displayOutput !== undefined
+            ? { ...data, output: displayOutput }
+            : data;
+        resolved.push({ ...c, data: newData } as ContentItem);
+        for (const raw of imageUrls) {
+          extraImages.push({
+            type: "image",
+            image_url: toDisplayUrl(raw),
+          });
+        }
+        continue;
+      }
+    }
+
+    const base = resolveContentItemUrl(c);
+    if (base.type === "text" && typeof base.text === "string") {
+      const urls = extractMarkdownImageUrls(base.text);
+      if (urls.length > 0) {
+        for (const raw of urls) {
+          extraImages.push({
+            type: "image",
+            image_url: toDisplayUrl(raw),
+          });
+        }
+        const stripped = stripMarkdownImageSyntax(base.text);
+        resolved.push({
+          ...base,
+          text: stripped.trim(),
+        });
+        continue;
+      }
+    }
+    resolved.push(base);
+  }
+
+  return [...resolved, ...extraImages];
 }
 
 /**
@@ -260,6 +326,7 @@ const chatSpecToSession = (chat: ChatSpec): ExtendedSession =>
     meta: chat.meta || {},
     status: chat.status ?? "idle",
     createdAt: chat.created_at ?? null,
+    pinned: chat.pinned ?? false,
   }) as ExtendedSession;
 
 /** Returns true when id is a pure numeric local timestamp (not a backend UUID). */
@@ -479,41 +546,50 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
     return s?.realId ?? null;
   }
 
+  /** Apply listChats to sessionList; merge realId and generating by session_id. */
+  private applyChatsToSessionList(
+    chats: ChatSpec[],
+  ): IAgentScopeRuntimeWebUISession[] {
+    const newList = chats
+      .filter((c) => c.id && c.id !== "undefined" && c.id !== "null")
+      .map(chatSpecToSession)
+      .reverse();
+
+    this.sessionList = newList.map((s) => {
+      const existing = this.sessionList.find(
+        (e) =>
+          (e as ExtendedSession).sessionId === (s as ExtendedSession).sessionId,
+      ) as ExtendedSession | undefined;
+      if (!existing) return s;
+      const next = { ...s } as ExtendedSession;
+      if (existing.realId) {
+        next.id = existing.id;
+        next.realId = existing.realId;
+      }
+      if (existing.generating !== undefined) {
+        next.generating = existing.generating;
+      }
+      return next as IAgentScopeRuntimeWebUISession;
+    });
+    if (this.preferredChatId) {
+      const preferredId = this.preferredChatId;
+      this.preferredChatId = null;
+      const idx = this.sessionList.findIndex((s) => s.id === preferredId);
+      if (idx > 0) {
+        const [preferred] = this.sessionList.splice(idx, 1);
+        this.sessionList.unshift(preferred);
+      }
+    }
+    return [...this.sessionList];
+  }
+
   async getSessionList() {
     if (this.sessionListRequest) return this.sessionListRequest;
 
     this.sessionListRequest = (async () => {
       try {
         const chats = await api.listChats();
-        const newList = chats
-          .filter((c) => c.id && c.id !== "undefined" && c.id !== "null")
-          .map(chatSpecToSession)
-          .reverse();
-
-        this.sessionList = newList.map((s) => {
-          const existing = this.sessionList.find(
-            (e) =>
-              (e as ExtendedSession).sessionId ===
-              (s as ExtendedSession).sessionId,
-          ) as ExtendedSession | undefined;
-          return existing?.realId
-            ? { ...s, id: existing.id, realId: existing.realId }
-            : s;
-        });
-
-        // Move the preferred session to the front so the library's useMount
-        // auto-selects it, avoiding an unnecessary getSession call for sessions[0].
-        if (this.preferredChatId) {
-          const preferredId = this.preferredChatId;
-          this.preferredChatId = null;
-          const idx = this.sessionList.findIndex((s) => s.id === preferredId);
-          if (idx > 0) {
-            const [preferred] = this.sessionList.splice(idx, 1);
-            this.sessionList.unshift(preferred);
-          }
-        }
-
-        return [...this.sessionList];
+        return this.applyChatsToSessionList(chats);
       } finally {
         this.sessionListRequest = null;
       }

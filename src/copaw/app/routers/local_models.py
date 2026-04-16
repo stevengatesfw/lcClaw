@@ -5,10 +5,19 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
+from agentscope_runtime.engine.schemas.exception import (
+    AppBaseException,
+)
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
-from ...local_models import DownloadSource, LocalModelInfo, LocalModelManager
+from ...local_models import (
+    DownloadSource,
+    LocalModelConfig,
+    LocalModelInfo,
+    LocalModelManager,
+)
+from ...providers.provider import ModelInfo
 from ...providers.provider_manager import ProviderManager
 
 router = APIRouter(prefix="/local-models", tags=["local-models"])
@@ -22,6 +31,20 @@ def get_local_model_manager(request: Request) -> LocalModelManager:
 def get_provider_manager(request: Request) -> ProviderManager:
     """Helper to get the ProviderManager instance from app state."""
     return request.app.state.provider_manager
+
+
+def _clear_local_runtime_provider_state(
+    provider_manager: ProviderManager,
+) -> None:
+    """Reset persisted provider state for the managed local runtime."""
+    provider_manager.update_provider(
+        "copaw-local",
+        {
+            "base_url": "",
+            "extra_models": [],
+        },
+    )
+    provider_manager.clear_active_model("copaw-local")
 
 
 class ServerStatus(BaseModel):
@@ -68,9 +91,9 @@ class StartServerRequest(BaseModel):
 
 class StartServerResponse(BaseModel):
     port: int = Field(..., description="Port bound by the llama.cpp server")
-    model_name: str = Field(
+    model_info: ModelInfo = Field(
         ...,
-        description="Alias exposed by the llama.cpp server",
+        description="Metadata for the model exposed by the llama.cpp server",
     )
 
 
@@ -88,6 +111,27 @@ class StartModelDownloadRequest(BaseModel):
 class ActionResponse(BaseModel):
     status: str = Field(..., description="Operation result status")
     message: str = Field(..., description="Human-readable operation result")
+
+
+class ServerUpdateStatus(BaseModel):
+    has_update: bool = Field(
+        ...,
+        description="Whether a newer llama.cpp package is available",
+    )
+
+
+class LocalModelConfigRequest(BaseModel):
+    """Request body for configuring local model settings."""
+
+    max_context_length: Optional[int] = Field(
+        default=None,
+        description="Maximum context length for local models.",
+        ge=32768,
+    )
+    generate_kwargs: Optional[dict[str, Any]] = Field(
+        default=None,
+        description=("Additional generation parameters for local models."),
+    )
 
 
 # =========================================================================
@@ -166,6 +210,26 @@ async def server_available(
     )
 
 
+@router.get(
+    "/server/update",
+    response_model=ServerUpdateStatus,
+    summary="Check if a llama.cpp update is available",
+)
+async def get_llamacpp_update_status(
+    manager: LocalModelManager = Depends(get_local_model_manager),
+) -> ServerUpdateStatus:
+    """Check whether an installed llama.cpp runtime has an update."""
+    installable, _ = manager.check_llamacpp_installability()
+    if not installable:
+        return ServerUpdateStatus(has_update=False)
+
+    installed, _ = manager.check_llamacpp_installation()
+    if not installed:
+        return ServerUpdateStatus(has_update=False)
+
+    return ServerUpdateStatus(has_update=await manager.has_update())
+
+
 @router.post(
     "/server/download",
     response_model=ActionResponse,
@@ -173,12 +237,15 @@ async def server_available(
 )
 async def start_llamacpp_download(
     manager: LocalModelManager = Depends(get_local_model_manager),
+    provider_manager: ProviderManager = Depends(get_provider_manager),
 ) -> ActionResponse:
     """Start downloading the llama.cpp binary package."""
     try:
-        manager.start_llamacpp_download()
+        server_stopped = await manager.start_llamacpp_download()
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if server_stopped:
+        _clear_local_runtime_provider_state(provider_manager)
     return ActionResponse(
         status="accepted",
         message="llama.cpp download started",
@@ -225,31 +292,29 @@ async def start_llamacpp_server(
 ) -> StartServerResponse:
     """Start a local llama.cpp server for a downloaded model."""
     try:
-        port = await model_manager.setup_server(
+        setup_result = await model_manager.setup_server(
             model_id=payload.model_id,
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    provider_manager.update_provider(
-        "copaw-local",
-        {
-            "base_url": f"http://127.0.0.1:{port}/v1",
-            "extra_models": [
-                {
-                    "id": payload.model_id,
-                    "name": payload.model_id,
-                },
-            ],
-        },
-    )
-    await provider_manager.activate_model(
-        provider_id="copaw-local",
-        model_id=payload.model_id,
-    )
+    try:
+        provider_manager.update_provider(
+            "copaw-local",
+            {
+                "base_url": f"http://127.0.0.1:{setup_result.port}/v1",
+                "extra_models": [setup_result.model_info],
+            },
+        )
+        await provider_manager.activate_model(
+            provider_id="copaw-local",
+            model_id=setup_result.model_info.id,
+        )
+    except (ValueError, AppBaseException) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return StartServerResponse(
-        port=port,
-        model_name=payload.model_id,
+        port=setup_result.port,
+        model_info=setup_result.model_info,
     )
 
 
@@ -264,13 +329,7 @@ async def stop_llamacpp_server(
 ) -> ActionResponse:
     """Stop the active llama.cpp server."""
     await model_manager.shutdown_server()
-    provider_manager.update_provider(
-        "copaw-local",
-        {
-            "base_url": "",
-            "extra_models": [],
-        },
-    )
+    _clear_local_runtime_provider_state(provider_manager)
 
     return ActionResponse(
         status="ok",
@@ -352,3 +411,43 @@ async def cancel_local_model_download(
         status="ok",
         message="Local model download cancellation requested",
     )
+
+
+@router.put(
+    "/config",
+    response_model=ActionResponse,
+    summary="Configure local model settings",
+)
+async def configure_local_model_settings(
+    payload: LocalModelConfigRequest,
+    local_manager: LocalModelManager = Depends(get_local_model_manager),
+    provider_manager: ProviderManager = Depends(get_provider_manager),
+) -> ActionResponse:
+    """Configure local model settings."""
+    if payload.max_context_length is not None:
+        await local_manager.set_max_context_length(payload.max_context_length)
+
+    if payload.generate_kwargs is not None:
+        provider_manager.update_provider(
+            "copaw-local",
+            {
+                "generate_kwargs": payload.generate_kwargs,
+            },
+        )
+
+    return ActionResponse(
+        status="ok",
+        message="Local model settings updated",
+    )
+
+
+@router.get(
+    "/config",
+    response_model=LocalModelConfig,
+    summary="Get local model settings",
+)
+async def get_local_model_settings(
+    local_manager: LocalModelManager = Depends(get_local_model_manager),
+) -> LocalModelConfig:
+    """Return persisted local model runtime settings."""
+    return local_manager.get_config()
