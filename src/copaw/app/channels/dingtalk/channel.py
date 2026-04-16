@@ -2211,6 +2211,20 @@ class DingTalkChannel(BaseChannel):
         """
         request = self._payload_to_request(payload)
 
+        from ...channel_service_token import ensure_channel_service_authorization
+
+        _owner = None
+        if self._workspace is not None:
+            _owner = getattr(
+                getattr(self._workspace, "runner", None),
+                "owner_user_id",
+                None,
+            )
+        await ensure_channel_service_authorization(
+            getattr(request, "channel", None) or self.channel,
+            owner_user_id=_owner,
+        )
+
         if isinstance(payload, dict):
             send_meta = dict(payload.get("meta") or {})
             if payload.get("session_webhook"):

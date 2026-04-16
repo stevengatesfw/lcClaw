@@ -69,6 +69,18 @@ class MultiAgentManager:
             config_path = get_config_path()
         cache_key = _workspace_cache_key(config_path, agent_id)
 
+        # For isolated tenants (LAZY_PLATFORM_KEY), normalise workspace_dir
+        # before reading the config.  This runs once per cold-load: fast (file
+        # I/O only) and idempotent, so it is safe to call inside the lock.
+        # Without this, DynamicMultiAgentRunner._get_workspace_runner() would
+        # load the workspace with the global workspace_dir
+        # (WORKING_DIR/workspaces/default) instead of the per-user one.
+        if copaw_storage_isolation_enabled():
+            from ..config.utils import is_tenant_storage_config_path
+            if is_tenant_storage_config_path(config_path):
+                from .migration import ensure_tenant_default_agent
+                ensure_tenant_default_agent(config_path)
+
         async with self._lock:
             if cache_key in self.agents:
                 logger.debug(

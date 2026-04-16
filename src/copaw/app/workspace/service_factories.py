@@ -96,11 +96,18 @@ async def create_chat_service(ws: "Workspace", service):
     elif copaw_storage_isolation_enabled():
         iso_factory = get_isolation_chat_manager_factory()
         if iso_factory is not None:
-            cm = TenantRoutingChatManager(iso_factory)
+            from ..workspace.workspace import _extract_owner_user_id
+
+            _owner = _extract_owner_user_id(
+                getattr(ws, "_root_config_path", None),
+            )
+            cm = TenantRoutingChatManager(iso_factory, owner_user_id=_owner)
             ws._service_manager.services["chat_manager"] = cm
             logger.info(
-                "TenantRoutingChatManager wired for %s (per-user chats.json)",
+                "TenantRoutingChatManager wired for %s (per-user chats.json, "
+                "owner=%s)",
                 ws.agent_id,
+                _owner,
             )
         else:
             logger.warning(

@@ -10,7 +10,7 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 import uuid
 
 from json_repair import repair_json
@@ -636,47 +636,123 @@ def get_chats_path() -> Path:
 # Fallback user_id when none provided (e.g. anonymous, cron)
 DEFAULT_USER_ID = "default"
 
+_DEFAULT_NEST_STORAGE_CHANNELS = frozenset(
+    {
+        "dingtalk",
+        "weixin",
+        "wechat",
+        "feishu",
+        "telegram",
+        "qq",
+        "discord",
+        "imessage",
+        "mqtt",
+        "voice",
+    },
+)
+
+
+def _nest_storage_channel_allowlist() -> frozenset[str]:
+    raw = (os.environ.get("COPAW_NEST_STORAGE_CHANNELS") or "").strip()
+    if not raw:
+        return _DEFAULT_NEST_STORAGE_CHANNELS
+    return frozenset(x.strip().lower() for x in raw.split(",") if x.strip())
+
+
+def storage_user_path_segments(user_storage_key: Optional[str]) -> List[str]:
+    """Split a storage tenant key into safe path segments under USERS_DIR."""
+    raw = (user_storage_key or DEFAULT_USER_ID).strip() or DEFAULT_USER_ID
+    parts = [p for p in raw.replace("\\", "/").split("/") if p and p not in (".", "")]
+    for p in parts:
+        if p == ".." or p.startswith(".."):
+            raise ValueError(f"Invalid storage user id segment: {user_storage_key!r}")
+    return parts if parts else [DEFAULT_USER_ID]
+
+
+def resolve_storage_user_id(
+    logical_user_id: Optional[str],
+    channel: Optional[str],
+    owner_user_id: Optional[str] = None,
+) -> str:
+    """Resolve filesystem tenant id under USERS_DIR (may contain one ``/``).
+
+    When ``LAZY_PLATFORM_KEY`` is set and JWT context exists, returns JWT uid.
+    Otherwise, if *owner_user_id* (workspace owner) or env
+    ``COPAW_CHANNEL_STORAGE_PARENT_USER_ID`` is set and *channel* is a
+    non-console IM channel, returns ``{parent}/{logical}``.
+    """
+    from ..context import get_context_user_id
+
+    logical = (logical_user_id or "").strip() or DEFAULT_USER_ID
+    if copaw_storage_isolation_enabled():
+        ctx = (get_context_user_id() or "").strip()
+        if ctx:
+            return ctx
+    parent = (owner_user_id or "").strip()
+    if not parent:
+        parent = (os.environ.get("COPAW_CHANNEL_STORAGE_PARENT_USER_ID") or "").strip()
+    if not parent:
+        return logical
+    ch = (channel or "").strip().lower()
+    if ch in ("", "console"):
+        return logical
+    if ch not in _nest_storage_channel_allowlist():
+        return logical
+    if "/" in parent or ".." in parent:
+        logger.warning(
+            "Ignoring storage parent (invalid segment): %r",
+            parent,
+        )
+        return logical
+    if "/" in logical or ".." in logical:
+        logger.warning(
+            "Ignoring nested storage for logical_user_id (invalid segment): %r",
+            logical,
+        )
+        return logical
+    return f"{parent}/{logical}"
+
 
 def get_chats_path_for_user(user_id: Optional[str]) -> Path:
     """Return chats.json path for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / CHATS_FILE).expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / CHATS_FILE).expanduser()
 
 
 def get_user_working_dir(user_id: Optional[str]) -> Path:
     """Return working directory for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid).expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return USERS_DIR.joinpath(*segments).expanduser()
 
 
 def get_sessions_dir_for_user(user_id: Optional[str]) -> Path:
     """Return sessions directory for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / "sessions").expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / "sessions").expanduser()
 
 
 def get_memory_dir_for_user(user_id: Optional[str]) -> Path:
     """Return memory directory for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / "memory").expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / "memory").expanduser()
 
 
 def get_file_store_dir_for_user(user_id: Optional[str]) -> Path:
     """Return file_store directory for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / "file_store").expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / "file_store").expanduser()
 
 
 def get_customized_skills_dir_for_user(user_id: Optional[str]) -> Path:
     """Return per-user customized_skills directory."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / "customized_skills").expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / "customized_skills").expanduser()
 
 
 def get_active_skills_dir_for_user(user_id: Optional[str]) -> Path:
     """Return active_skills directory for a user. Always uses per-user dir."""
-    uid = str(user_id or DEFAULT_USER_ID)
-    return (USERS_DIR / uid / "active_skills").expanduser()
+    segments = storage_user_path_segments(str(user_id or DEFAULT_USER_ID))
+    return (USERS_DIR.joinpath(*segments) / "active_skills").expanduser()
 
 
 def copaw_storage_isolation_enabled() -> bool:
@@ -737,8 +813,30 @@ def get_heartbeat_config_from_path(config_path: Path) -> HeartbeatConfig:
     return hb if hb is not None else HeartbeatConfig()
 
 
+def iter_chats_storage_tenant_keys() -> list[str]:
+    """List storage tenant keys that have a ``chats.json`` (flat or one level nested)."""
+    out: list[str] = []
+    if not USERS_DIR.is_dir():
+        return out
+    for child in sorted(USERS_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        if (child / CHATS_FILE).is_file():
+            out.append(child.name)
+        for sub in sorted(child.iterdir()):
+            if not sub.is_dir():
+                continue
+            if (sub / CHATS_FILE).is_file():
+                out.append(f"{child.name}/{sub.name}")
+    return out
+
+
 def iter_user_config_paths() -> list[tuple[str, Path]]:
-    """List (user_id, config path) under ``users/<uid>/config.json``."""
+    """List (user_id, config path) under ``users/<uid>/config.json``.
+
+    Includes one level of nesting: ``users/<parent>/<child>/config.json`` with
+    storage key ``parent/child``.
+    """
     out: list[tuple[str, Path]] = []
     if not USERS_DIR.is_dir():
         return out
@@ -748,6 +846,12 @@ def iter_user_config_paths() -> list[tuple[str, Path]]:
         cp = child / CONFIG_FILE
         if cp.is_file():
             out.append((child.name, cp))
+        for sub in sorted(child.iterdir()):
+            if not sub.is_dir():
+                continue
+            cp2 = sub / CONFIG_FILE
+            if cp2.is_file():
+                out.append((f"{child.name}/{sub.name}", cp2))
     return out
 
 

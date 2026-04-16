@@ -29,6 +29,7 @@ from .command_dispatch import (
     run_command_path,
 )
 from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
+from .lcagent_published_apps_fetch import fetch_visible_published_apps_async
 from .query_error_dump import write_query_error_dump
 from .session import SafeJSONSession
 from .utils import build_env_context
@@ -45,12 +46,14 @@ from ...config.utils import (
     copaw_storage_isolation_enabled,
     get_effective_config_path_for_runner,
     get_user_working_dir,
+    resolve_storage_user_id,
 )
 from ...constant import WORKING_DIR
 from ...constant import TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS
 from ...context import (
     get_context_user_id,
     get_process_request_meta,
+    get_request_authorization,
     reset_current_working_dir,
     set_current_working_dir,
     set_process_request_meta,
@@ -166,11 +169,13 @@ class AgentRunner(Runner):
         agent_id: str = "default",
         workspace_dir: Path | None = None,
         task_tracker: Any | None = None,
+        owner_user_id: str | None = None,
     ) -> None:
         super().__init__()
         self.framework_type = "agentscope"
         self.agent_id = agent_id
         self.workspace_dir = workspace_dir
+        self.owner_user_id = owner_user_id
         self._chat_manager = None
         self._chat_manager_factory = None
         self._mcp_manager = None
@@ -564,6 +569,17 @@ class AgentRunner(Runner):
         )
         query = _get_last_user_text(msgs)
         session_id = getattr(request, "session_id", "") or ""
+        channel = getattr(request, "channel", DEFAULT_CHANNEL)
+        logical_user_id = (
+            get_context_user_id()
+            or getattr(request, "user_id", None)
+            or ""
+        )
+        storage_user_id = resolve_storage_user_id(
+            logical_user_id if logical_user_id else None,
+            channel,
+            owner_user_id=self.owner_user_id,
+        )
 
         (
             approval_response,
@@ -572,10 +588,9 @@ class AgentRunner(Runner):
         ) = await self._resolve_pending_approval(session_id, query)
         if approval_response is not None:
             yield approval_response, True
-            user_id = getattr(request, "user_id", "") or ""
             await self._cleanup_denied_session_memory(
                 session_id,
-                user_id,
+                storage_user_id,
                 denial_response=approval_response,
             )
             return
@@ -642,20 +657,87 @@ class AgentRunner(Runner):
             if _meta_console:
                 set_process_request_meta({**cur, **_meta_console})
             enable_agent, enable_skills = _feature_flags_from_process_meta()
+            # IM / direct CoPaw: LCAgent proxy does not inject lcagent_published_apps.
+            # Backfill from the same GET as the console so env_context lists apps.
+            if enable_agent:
+                cur_apps = dict(get_process_request_meta())
+                raw_apps = cur_apps.get("lcagent_published_apps")
+                missing_list = not isinstance(raw_apps, list) or len(raw_apps) == 0
+                api_base = str(
+                    cur_apps.get("lcagent_console_api_base") or "",
+                ).strip()
+                auth_hdr = get_request_authorization().strip()
+                if not missing_list:
+                    try:
+                        logger.debug(
+                            "IM meta has lcagent_published_apps already: count=%s",
+                            len(raw_apps) if isinstance(raw_apps, list) else "N/A",
+                        )
+                    except Exception:
+                        pass
+                elif not api_base or not auth_hdr:
+                    logger.info(
+                        "IM meta backfill skipped: missing_list=True has_api_base=%s has_auth=%s",
+                        bool(api_base),
+                        bool(auth_hdr),
+                    )
+                else:
+                    merged = await fetch_visible_published_apps_async(
+                        api_base,
+                        auth_hdr,
+                    )
+                    if merged:
+                        updates: dict[str, Any] = {
+                            **cur_apps,
+                            "lcagent_published_apps": merged,
+                        }
+                        if not str(
+                            cur_apps.get("lcagent_published_app_id") or "",
+                        ).strip():
+                            env_default = (
+                                os.environ.get(
+                                    "LCAGENT_COPAW_DEFAULT_PUBLISHED_APP_ID",
+                                    "",
+                                ).strip()
+                            )
+                            pick = env_default or str(
+                                (merged[0].get("id") or ""),
+                            ).strip()
+                            if pick:
+                                updates["lcagent_published_app_id"] = pick
+                                for ent in merged:
+                                    if (
+                                        isinstance(ent, dict)
+                                        and str(ent.get("id") or "").strip()
+                                        == pick
+                                    ):
+                                        nm = str(ent.get("name") or "").strip()
+                                        if nm:
+                                            updates["lcagent_published_app_name"] = nm
+                                        des = str(
+                                            ent.get("description") or "",
+                                        ).strip()
+                                        if des:
+                                            updates[
+                                                "lcagent_published_app_description"
+                                            ] = des
+                                        break
+                        set_process_request_meta(updates)
+                        logger.info(
+                            "IM meta backfill: lcagent_published_apps count=%s "
+                            "default_app_id=%s",
+                            len(merged),
+                            (updates.get("lcagent_published_app_id") or "")[:36],
+                        )
             session_id = request.session_id
-            # Prefer JWT context (UserIdContextMiddleware) over body; body
-            # may not be updated by middleware in some stacks.
-            user_id = get_context_user_id() or getattr(
-                request, "user_id", None
-            )
-            channel = getattr(request, "channel", DEFAULT_CHANNEL)
 
             logger.info(
                 "Handle agent query:\n%s",
                 json.dumps(
                     {
                         "session_id": session_id,
-                        "user_id": user_id,
+                        "logical_user_id": logical_user_id,
+                        "storage_user_id": storage_user_id,
                         "channel": channel,
                         "enable_agent": enable_agent,
                         "enable_skills": enable_skills,
@@ -667,7 +749,7 @@ class AgentRunner(Runner):
                 ),
             )
 
-            user_working_dir = get_user_working_dir(user_id)
+            user_working_dir = get_user_working_dir(storage_user_id)
             set_current_working_dir(user_working_dir)
             wd = (
                 str(user_working_dir)
@@ -680,7 +762,7 @@ class AgentRunner(Runner):
             )
             env_context = build_env_context(
                 session_id=session_id,
-                user_id=user_id,
+                user_id=logical_user_id,
                 channel=channel,
                 working_dir=wd,
             )
@@ -809,7 +891,7 @@ class AgentRunner(Runner):
                             f"{names_line}\n"
                         )
 
-            mcp_clients = await self._get_mcp_clients_for_user(user_id)
+            mcp_clients = await self._get_mcp_clients_for_user(storage_user_id)
 
             _root_cp = None
             if self._workspace is not None:
@@ -822,7 +904,7 @@ class AgentRunner(Runner):
                 self._request_llm_cfg_override is not None
                 or copaw_storage_isolation_enabled()
             ):
-                memory_manager = await self._get_memory_manager(user_id)
+                memory_manager = await self._get_memory_manager(storage_user_id)
             else:
                 memory_manager = self.memory_manager
 
@@ -838,7 +920,7 @@ class AgentRunner(Runner):
                 enable_skills=enable_skills,
                 request_context={
                     "session_id": session_id,
-                    "user_id": user_id,
+                    "user_id": logical_user_id,
                     "channel": channel,
                     "agent_id": self.agent_id,
                     **(
@@ -870,19 +952,19 @@ class AgentRunner(Runner):
                 else:
                     name = "Media Message"
 
-            mgr = self._get_chat_manager(user_id)
+            mgr = self._get_chat_manager(storage_user_id)
             if mgr is not None:
                 logger.debug(
                     "Runner: get_or_create_chat session_id=%s user_id=%s "
                     "channel=%s name=%s",
                     session_id,
-                    user_id,
+                    logical_user_id,
                     channel,
                     name,
                 )
                 chat = await mgr.get_or_create_chat(
                     session_id,
-                    user_id,
+                    logical_user_id,
                     channel,
                     name=name,
                 )
@@ -907,7 +989,7 @@ class AgentRunner(Runner):
             try:
                 await self.session.load_session_state(
                     session_id=session_id,
-                    user_id=user_id,
+                    user_id=storage_user_id,
                     agent=agent,
                 )
             except KeyError as e:
@@ -978,7 +1060,7 @@ class AgentRunner(Runner):
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(
                     session_id=session_id,
-                    user_id=user_id,
+                    user_id=storage_user_id,
                     agent=agent,
                 )
 
