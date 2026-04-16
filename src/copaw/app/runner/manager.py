@@ -8,7 +8,12 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Optional
 
-from ...config.utils import DEFAULT_USER_ID, copaw_storage_isolation_enabled
+from ...config.utils import (
+    DEFAULT_USER_ID,
+    copaw_storage_isolation_enabled,
+    iter_chats_storage_tenant_keys,
+    resolve_storage_user_id,
+)
 from ...context import get_context_user_id
 from .models import ChatSpec, ChatUpdate
 from .repo import BaseChatRepository
@@ -275,31 +280,49 @@ class TenantRoutingChatManager:
     :class:`ChatManager` factory used by ``app.state.chat_manager_factory``.
     """
 
-    def __init__(self, factory: Callable[[str], ChatManager]) -> None:
+    def __init__(
+        self,
+        factory: Callable[[str], ChatManager],
+        owner_user_id: Optional[str] = None,
+    ) -> None:
         self._factory = factory
+        self._owner_user_id = owner_user_id
 
-    def _tenant_uid(self, explicit_user_id: Optional[str]) -> str:
+    def _storage_tenant_key(
+        self,
+        explicit_user_id: Optional[str],
+        channel: Optional[str],
+    ) -> str:
         if copaw_storage_isolation_enabled():
             ctx = (get_context_user_id() or "").strip()
             if ctx:
                 return ctx
+        return resolve_storage_user_id(
+            explicit_user_id, channel, owner_user_id=self._owner_user_id,
+        )
+
+    def _logical_spec_user_id(self, explicit_user_id: Optional[str]) -> str:
         uid = (explicit_user_id or "").strip()
         return uid or DEFAULT_USER_ID
-
-    def _spec_user_id(self, explicit_user_id: Optional[str]) -> str:
-        return self._tenant_uid(explicit_user_id)
 
     async def list_chats(
         self,
         user_id: Optional[str] = None,
         channel: Optional[str] = None,
     ) -> list[ChatSpec]:
-        mgr = self._factory(self._tenant_uid(user_id))
+        tid = self._storage_tenant_key(user_id, channel)
+        mgr = self._factory(tid)
         return await mgr.list_chats(user_id=user_id, channel=channel)
 
     async def get_chat(self, chat_id: str) -> Optional[ChatSpec]:
-        mgr = self._factory(self._tenant_uid(None))
-        return await mgr.get_chat(chat_id)
+        ctx = (get_context_user_id() or "").strip()
+        if ctx:
+            return await self._factory(ctx).get_chat(chat_id)
+        for key in iter_chats_storage_tenant_keys():
+            spec = await self._factory(key).get_chat(chat_id)
+            if spec is not None:
+                return spec
+        return None
 
     async def get_or_create_chat(
         self,
@@ -308,8 +331,8 @@ class TenantRoutingChatManager:
         channel: str = DEFAULT_CHANNEL,
         name: str = "New Chat",
     ) -> ChatSpec:
-        tid = self._tenant_uid(user_id)
-        spec_uid = self._spec_user_id(user_id)
+        tid = self._storage_tenant_key(user_id, channel)
+        spec_uid = self._logical_spec_user_id(user_id)
         mgr = self._factory(tid)
         return await mgr.get_or_create_chat(
             session_id,
@@ -319,23 +342,32 @@ class TenantRoutingChatManager:
         )
 
     async def create_chat(self, spec: ChatSpec) -> ChatSpec:
-        mgr = self._factory(self._tenant_uid(spec.user_id))
+        tid = self._storage_tenant_key(spec.user_id, spec.channel)
+        mgr = self._factory(tid)
         return await mgr.create_chat(spec)
 
     async def update_chat(self, spec: ChatSpec) -> ChatSpec:
-        mgr = self._factory(self._tenant_uid(spec.user_id))
+        tid = self._storage_tenant_key(spec.user_id, spec.channel)
+        mgr = self._factory(tid)
         return await mgr.update_chat(spec)
 
     async def delete_chats(self, chat_ids: list[str]) -> bool:
-        mgr = self._factory(self._tenant_uid(None))
-        return await mgr.delete_chats(chat_ids)
+        ctx = (get_context_user_id() or "").strip()
+        if ctx:
+            return await self._factory(ctx).delete_chats(chat_ids)
+        deleted = False
+        for key in iter_chats_storage_tenant_keys():
+            if await self._factory(key).delete_chats(chat_ids):
+                deleted = True
+        return deleted
 
     async def count_chats(
         self,
         user_id: Optional[str] = None,
         channel: Optional[str] = None,
     ) -> int:
-        mgr = self._factory(self._tenant_uid(user_id))
+        tid = self._storage_tenant_key(user_id, channel)
+        mgr = self._factory(tid)
         return await mgr.count_chats(user_id=user_id, channel=channel)
 
     async def get_chat_id_by_session(
@@ -343,5 +375,17 @@ class TenantRoutingChatManager:
         session_id: str,
         channel: str,
     ) -> str | None:
-        mgr = self._factory(self._tenant_uid(None))
-        return await mgr.get_chat_id_by_session(session_id, channel)
+        ctx = (get_context_user_id() or "").strip()
+        if ctx:
+            return await self._factory(ctx).get_chat_id_by_session(
+                session_id,
+                channel,
+            )
+        for key in iter_chats_storage_tenant_keys():
+            cid = await self._factory(key).get_chat_id_by_session(
+                session_id,
+                channel,
+            )
+            if cid:
+                return cid
+        return None

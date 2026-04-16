@@ -47,6 +47,26 @@ def _resolve_memory_class(backend: str) -> type:
     )
 
 
+def _extract_owner_user_id(root_config_path: Optional[Path]) -> Optional[str]:
+    """Extract tenant user_id from ``users/<uid>/config.json``.
+
+    Returns the first path segment after ``users/`` when the config path
+    lives inside the per-user directory tree, otherwise ``None``.
+    """
+    if root_config_path is None:
+        return None
+    from ...constant import USERS_DIR
+
+    try:
+        rel = root_config_path.resolve().relative_to(USERS_DIR.resolve())
+    except ValueError:
+        return None
+    parts = rel.parts  # e.g. ("UUID-A", "config.json")
+    if parts:
+        return parts[0]
+    return None
+
+
 class Workspace:
     """Single agent workspace with complete runtime components.
 
@@ -174,6 +194,9 @@ class Workspace:
                     "agent_id": ws.agent_id,
                     "workspace_dir": ws.workspace_dir,
                     "task_tracker": ws._task_tracker,
+                    "owner_user_id": _extract_owner_user_id(
+                        ws._root_config_path,
+                    ),
                 },
                 stop_method="stop",
                 priority=10,

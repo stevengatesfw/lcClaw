@@ -45,6 +45,12 @@ async def fetch_lcagent_home_llm_resolved_config() -> Optional[ResolvedModelConf
     ).strip().rstrip("/")
     secret = (os.environ.get("LCAGENT_COPAW_RESOLVE_SECRET") or "").strip()
     if not base or not secret:
+        logger.warning(
+            "fetch_lcagent_home_llm skipped: LCAGENT_INTERNAL_CONSOLE_API_BASE=%s "
+            "LCAGENT_COPAW_RESOLVE_SECRET=%s",
+            "set" if base else "EMPTY",
+            "set" if secret else "EMPTY",
+        )
         return None
 
     url = f"{base}/console/api/copaw/resolve_home_llm"
