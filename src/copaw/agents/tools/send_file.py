@@ -141,6 +141,21 @@ def _lcagent_download_file_url(origin: str, posix_path: str) -> str:
     )
 
 
+_LCAGENT_UPLOAD_PREFIX = "/app/upload"
+
+
+def _lcagent_static_file_url(origin: str, posix_path: str) -> str:
+    """Convert /app/upload/xxx → {origin}/static/upload/xxx (nginx static, no auth required).
+
+    Falls back to the download API for /tmp/ or other non-upload paths.
+    """
+    origin_norm = _apply_optional_file_url_scheme(origin)
+    if posix_path.startswith(_LCAGENT_UPLOAD_PREFIX):
+        rel = posix_path[len(_LCAGENT_UPLOAD_PREFIX):]
+        return f"{origin_norm}/static/upload{rel}"
+    return _lcagent_download_file_url(origin, posix_path)
+
+
 _MISSING_ORIGIN_FOR_LCAGENT_PATH_MSG = (
     "错误：无法将 LCAgent 服务端路径转为下载链接："
     "缺少 meta 中的 lcagent_console_public_base（或可用的 "
@@ -337,7 +352,7 @@ async def send_file_to_user(
                     TextBlock(type="text", text=_MISSING_ORIGIN_FOR_LCAGENT_PATH_MSG),
                 ],
             )
-        full_url = _lcagent_download_file_url(origin, posix_path)
+        full_url = _lcagent_static_file_url(origin, posix_path)
         name = os.path.basename(posix_path) or "file"
         mime_type = _guess_mime_from_name(name)
         try:
