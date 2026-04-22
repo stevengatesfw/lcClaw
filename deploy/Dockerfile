@@ -1,3 +1,8 @@
+# 必须在任意第一个 FROM 之前声明，第二个阶段才能使用 ${PYTHON_RUNTIME_IMAGE}。
+# 国内拉 Python 基础镜像：docker build --build-arg PYTHON_RUNTIME_IMAGE=... 或本机 docker tag
+# 固定 CPython 3.11 + glibc（bookworm），避免 onnxruntime 在部分 node:slim 环境无 wheel。
+ARG PYTHON_RUNTIME_IMAGE=python:3.11-slim-bookworm
+
 # -----------------------------------------------------------------------------
 # Stage 1: build console frontend (dist not committed in repo).
 # -----------------------------------------------------------------------------
@@ -15,7 +20,6 @@ RUN cd /app/console && npm ci --include=dev && npm run build
 #    docker pull docker.m.daocloud.io/library/python:3.11-slim-bookworm
 #    docker tag docker.m.daocloud.io/library/python:3.11-slim-bookworm python:3.11-slim-bookworm
 # 固定 CPython 3.11 + glibc（bookworm），避免 onnxruntime 在部分 node:slim 环境无 wheel。
-ARG PYTHON_RUNTIME_IMAGE=python:3.11-slim-bookworm
 FROM ${PYTHON_RUNTIME_IMAGE}
 
 # ENV variables
