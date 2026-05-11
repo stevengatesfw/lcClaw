@@ -72,7 +72,7 @@ def generate_qrcode_image(scan_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# WeChat (iLink) handler
+# WeChat (iLink) handler — the only supported QR code auth channel
 # ---------------------------------------------------------------------------
 
 
@@ -160,111 +160,9 @@ class WeixinQRCodeAuthHandler(QRCodeAuthHandler):
         )
 
 
-# ---------------------------------------------------------------------------
-# WeCom (Enterprise WeChat) handler
-# ---------------------------------------------------------------------------
-
-_WECOM_AUTH_ORIGIN = "https://work.weixin.qq.com"
-_WECOM_SOURCE = "copaw"
-
-
-class WecomQRCodeAuthHandler(QRCodeAuthHandler):
-    """QR code auth handler for WeCom bot authorization."""
-
-    async def fetch_qrcode(self, request: Request) -> QRCodeResult:
-        import json
-        import re
-        import secrets
-        import time
-        import httpx
-
-        state = secrets.token_urlsafe(16)
-        gen_url = (
-            f"{_WECOM_AUTH_ORIGIN}/ai/qc/gen"
-            f"?source={_WECOM_SOURCE}&state={state}"
-            f"&timestamp={int(time.time() * 1000)}"
-        )
-
-        try:
-            async with httpx.AsyncClient(
-                timeout=15,
-                follow_redirects=True,
-            ) as client:
-                resp = await client.get(gen_url)
-                resp.raise_for_status()
-                html = resp.text
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"WeCom auth page fetch failed: {exc}",
-            ) from exc
-
-        settings_match = re.search(
-            r"window\.settings\s*=\s*(\{.*\})",
-            html,
-            re.DOTALL,
-        )
-        if not settings_match:
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to parse WeCom auth page settings",
-            )
-
-        try:
-            settings = json.loads(settings_match.group(1))
-        except json.JSONDecodeError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to parse WeCom settings JSON: {exc}",
-            ) from exc
-
-        scode = settings.get("scode", "")
-        auth_url = settings.get("auth_url", "")
-
-        if not scode or not auth_url:
-            raise HTTPException(
-                status_code=502,
-                detail="WeCom returned empty scode or auth_url",
-            )
-
-        return QRCodeResult(scan_url=auth_url, poll_token=scode)
-
-    async def poll_status(self, token: str, request: Request) -> PollResult:
-        from urllib.parse import quote
-        import httpx
-
-        query_url = (
-            f"{_WECOM_AUTH_ORIGIN}/ai/qc/query_result" f"?scode={quote(token)}"
-        )
-
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(query_url)
-                resp.raise_for_status()
-                result = resp.json()
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"WeCom status check failed: {exc}",
-            ) from exc
-
-        data = result.get("data", {})
-        bot_info = data.get("bot_info", {})
-
-        return PollResult(
-            status=data.get("status", "waiting"),
-            credentials={
-                "bot_id": bot_info.get("botid", ""),
-                "secret": bot_info.get("secret", ""),
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
-# Handler registry – add new channels here
+# Handler registry — add new channels here
 # ---------------------------------------------------------------------------
 
 QRCODE_AUTH_HANDLERS: Dict[str, QRCodeAuthHandler] = {
     "weixin": WeixinQRCodeAuthHandler(),
-    "wecom": WecomQRCodeAuthHandler(),
 }

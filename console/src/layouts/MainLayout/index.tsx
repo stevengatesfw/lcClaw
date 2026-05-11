@@ -87,11 +87,20 @@ export default function MainLayout() {
         <Content className="page-container" style={{ margin: 0 }}>
           <div className="page-content">
             <ChunkErrorBoundary resetKey={currentPath}>
-              <Routes>
+              <Suspense
+                fallback={
+                  <Spin
+                    tip={t("common.loading")}
+                    style={{ display: "block", margin: "20vh auto" }}
+                  />
+                }
+              >
+                <Routes>
                 <Route path="/" element={<Navigate to="/chat" replace />} />
                 <Route path="/chat/*" element={<Chat />} />
                 <Route path="*" element={<Navigate to="/chat" replace />} />
               </Routes>
+              </Suspense>
             </ChunkErrorBoundary>
           </div>
         </Content>
