@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from .base import BaseChatRepository
+from .db_repo import DbChatRepository
 from ..models import ChatsFile
 
 
@@ -68,3 +69,24 @@ class JsonChatRepository(BaseChatRepository):
 
         # Atomic replace (shutil.move handles cross-disk on Windows)
         shutil.move(str(tmp_path), str(self._path))
+
+        # Dual-write: sync to TiDB
+        self._sync_to_db(payload)
+
+    def _sync_to_db(self, payload: dict) -> None:
+        """Sync chat specs from JSON to copaw_chat_sessions table."""
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            user_id = self._path.parent.name
+            if not user_id or user_id in (".", ".."):
+                return
+            from ..models import ChatsFile
+            cf = ChatsFile.model_validate(payload)
+            if not cf.chats:
+                return
+            repo = DbChatRepository(user_id)
+            import asyncio
+            asyncio.create_task(repo.save(cf))
+        except Exception:
+            logger.warning("DB sync failed (JSON write succeeded)", exc_info=True)

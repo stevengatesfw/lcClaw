@@ -1064,6 +1064,14 @@ class AgentRunner(Runner):
                     agent=agent,
                 )
 
+                # Sync messages to TiDB
+                try:
+                    state_dicts = {"agent": agent.state_dict()}
+                    from ..runner.repo.db_repo import sync_messages_to_db
+                    await sync_messages_to_db(session_id, storage_user_id, state_dicts)
+                except Exception:
+                    logger.warning("messages DB sync failed", exc_info=True)
+
             if mgr is not None and chat is not None:
                 await mgr.update_chat(chat)
 
