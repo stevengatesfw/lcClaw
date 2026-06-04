@@ -11,6 +11,7 @@ from agentscope.tool import ToolResponse
 from .utils import (
     truncate_text_output,
     read_file_safe,
+    sandbox_check,
     DEFAULT_MAX_BYTES,
 )
 from ...config.context import (
@@ -22,18 +23,26 @@ from ...context import get_current_working_dir
 
 
 def _resolve_file_path(file_path: str) -> str:
-    """Resolve file path: absolute paths as-is; relative paths from LCAgent
-    per-user cwd when set, else agent workspace or WORKING_DIR.
+    """Resolve file path and enforce sandbox.
+
+    Relative paths are resolved from LCAgent per-user cwd when set,
+    else agent workspace or WORKING_DIR. Absolute paths are allowed
+    only if they fall within an allowed root directory (sandbox check).
     """
     path = Path(file_path).expanduser()
     if path.is_absolute():
-        return str(path)
-    try:
-        lc_cwd = get_current_working_dir()
-        return str(lc_cwd / file_path)
-    except Exception:
-        workspace_dir = get_current_workspace_dir() or WORKING_DIR
-        return str(workspace_dir / file_path)
+        resolved = str(path)
+    else:
+        try:
+            lc_cwd = get_current_working_dir()
+            resolved = str(lc_cwd / file_path)
+        except Exception:
+            workspace_dir = get_current_workspace_dir() or WORKING_DIR
+            resolved = str(workspace_dir / file_path)
+
+    # 沙箱检查：确保路径在允许范围内
+    sandbox_check(resolved)
+    return resolved
 
 
 def _get_encoding_for_file(file_path: str) -> str:

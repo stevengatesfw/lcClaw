@@ -4,6 +4,7 @@
 """Shared utilities for file and shell tools."""
 
 import re
+from pathlib import Path
 
 import logging
 
@@ -17,6 +18,61 @@ DEFAULT_MAX_BYTES = 50 * 1024
 
 # Maximum file size to read into memory (1GB)
 MAX_FILE_READ_BYTES = 1024 * 1024 * 1024
+
+
+def sandbox_check(resolved_path: str) -> None:
+    """检查路径是否在允许的目录范围内。
+
+    允许的范围（按优先级）：
+    1. current_workspace_dir — agent workspace（如 users/xxx/workspace/default）
+    2. current_working_dir — LCAgent 每用户工作目录
+    3. WORKING_DIR — 全局 copaw 工作目录
+
+    Args:
+        resolved_path: 已解析的绝对路径
+
+    Raises:
+        ValueError: 路径超出允许范围
+    """
+    from ...config.context import get_current_workspace_dir
+    from ...constant import WORKING_DIR
+    from ...context import get_current_working_dir
+
+    p = Path(resolved_path).resolve()
+    allowed_roots: list[Path] = []
+
+    # 1. agent workspace
+    try:
+        ws = get_current_workspace_dir()
+        if ws:
+            allowed_roots.append(Path(ws).resolve())
+    except Exception:
+        pass
+
+    # 2. LCAgent per-user working dir
+    try:
+        lc_cwd = get_current_working_dir()
+        if lc_cwd:
+            allowed_roots.append(Path(lc_cwd).resolve())
+    except Exception:
+        pass
+
+    # 3. 全局 WORKING_DIR
+    if WORKING_DIR:
+        allowed_roots.append(Path(WORKING_DIR).resolve())
+
+    for root in allowed_roots:
+        try:
+            p.relative_to(root)
+            return  # ✅ 在允许范围内
+        except ValueError:
+            continue
+
+    root_desc = ", ".join(str(r) for r in allowed_roots)
+    raise ValueError(
+        f"路径 {resolved_path} 超出允许范围。"
+        f"只允许写入以下目录: {root_desc}"
+    )
 
 
 # pylint: disable=too-many-return-statements

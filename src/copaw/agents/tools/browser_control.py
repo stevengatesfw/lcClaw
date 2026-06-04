@@ -33,17 +33,27 @@ from ...config.context import get_current_workspace_dir
 from ...constant import WORKING_DIR
 
 from .browser_snapshot import build_role_snapshot_from_aria
+from .utils import sandbox_check
 
 logger = logging.getLogger(__name__)
 
 
 def _resolve_output_path(path: str) -> str:
-    """Resolve relative output paths under workspace_dir/browser/."""
+    """Resolve relative output paths under workspace_dir/browser/.
+
+    Absolute paths are allowed only if they fall within an allowed
+    root directory (sandbox check).
+    """
     if Path(path).is_absolute():
-        return path
-    base_dir = (get_current_workspace_dir() or WORKING_DIR) / "browser"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    return str(base_dir / path)
+        resolved = path
+    else:
+        base_dir = (get_current_workspace_dir() or WORKING_DIR) / "browser"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        resolved = str(base_dir / path)
+
+    # 沙箱检查：确保路径在允许范围内
+    sandbox_check(resolved)
+    return resolved
 
 
 # Hybrid mode detection: Windows + Uvicorn reload mode requires sync Playwright
