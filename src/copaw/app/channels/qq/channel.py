@@ -1444,6 +1444,28 @@ class QQChannel(BaseChannel):
             min(state.reconnect_attempts, len(RECONNECT_DELAYS) - 1)
         ]
 
+    def _reconnect_or_stop(self, state: _WSState, reason: str) -> bool:
+        """Apply backoff and max-attempts check before reconnecting.
+
+        Used when token/gateway or WS connection fails *before* entering the
+        recv loop, so early-return paths get the same backoff as normal
+        disconnects.
+        """
+        delay = self._compute_reconnect_delay(state)
+        state.reconnect_attempts += 1
+        max_attempts = self._max_reconnect_attempts
+        if max_attempts != -1 and state.reconnect_attempts >= max_attempts:
+            logger.error(
+                "qq max reconnect attempts reached after %s failure", reason,
+            )
+            return False
+        logger.info(
+            "qq reconnecting in %ss after %s failure (attempt %s)",
+            delay, reason, state.reconnect_attempts,
+        )
+        self._stop_event.wait(timeout=delay)
+        return not self._stop_event.is_set()
+
     # ------------------------------------------------------------------
     # WebSocket: single connection attempt
     # ------------------------------------------------------------------
@@ -1467,13 +1489,13 @@ class QQChannel(BaseChannel):
             url = _get_channel_url_sync(token)
         except Exception as e:
             logger.warning("qq get token/gateway failed: %s", e)
-            return True
+            return self._reconnect_or_stop(state, "token/gateway")
         logger.info("qq connecting to %s", url)
         try:
             ws = websocket.create_connection(url)
         except Exception as e:
             logger.warning("qq ws connect failed: %s", e)
-            return True
+            return self._reconnect_or_stop(state, "ws connect")
 
         hb = _HeartbeatController(ws, self._stop_event, state)
         try:
