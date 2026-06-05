@@ -134,6 +134,10 @@ Think of it like a human reviewing their journal and updating their mental model
 The goal: Be helpful without being annoying. Check in a few times a day, do useful background work, but respect quiet time.
 <!-- heartbeat:end -->
 
+## File Output
+
+When generating files, always use `workspaces/default/` as the output directory (e.g. write to `workspaces/default/xxx.pdf` instead of `xxx.pdf`). Files placed directly in the user root directory will not appear in the frontend "Skill Generated" file list.
+
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works, and update the AGENTS.md file in your workspace.
