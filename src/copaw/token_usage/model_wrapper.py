@@ -10,7 +10,6 @@ from agentscope.model._model_usage import ChatUsage
 from pydantic import BaseModel
 
 from .manager import get_token_usage_manager
-from .lcagent_cost_report import report_lcagent_cost_audit
 
 
 class TokenRecordingModelWrapper(ChatModelBase):
@@ -36,12 +35,6 @@ class TokenRecordingModelWrapper(ChatModelBase):
                 prompt_tokens=pt,
                 completion_tokens=ct,
                 at_date=date.today(),
-            )
-            await report_lcagent_cost_audit(
-                prompt_tokens=pt,
-                completion_tokens=ct,
-                model_name=self.model_name,
-                usage=usage,
             )
 
     async def __call__(

@@ -468,11 +468,8 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
 
         from ..context import (
             reset_process_request_meta,
-            reset_process_session_id,
             reset_request_authorization,
-            set_lcagent_billing_snapshot,
             set_process_request_meta,
-            set_process_session_id,
             set_request_authorization,
         )
 
@@ -485,17 +482,6 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
         set_process_request_meta(meta)
         set_request_authorization(request.headers.get("Authorization") or "")
-        session_id = data.get("session_id")
-        if session_id is not None:
-            set_process_session_id(str(session_id))
-        billing_user_id = verify_lcagent_token(
-            request.headers.get("Authorization", ""),
-        )
-        set_lcagent_billing_snapshot(
-            user_id=billing_user_id,
-            meta=meta,
-            session_id=str(session_id) if session_id is not None else None,
-        )
 
         key = _get_platform_key()
         has_auth = bool((request.headers.get("Authorization") or "").strip())
@@ -518,9 +504,10 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
             finally:
                 reset_process_request_meta()
                 reset_request_authorization()
-                reset_process_session_id()
 
-        user_id = billing_user_id
+        user_id = verify_lcagent_token(
+            request.headers.get("Authorization", "")
+        )
         logger.info(
             "agent/process: has_key=True has_auth=%s "
             "resolved_user_id=%s body_user_id=%s",
@@ -530,12 +517,9 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         )
         if not user_id:
             from fastapi.responses import JSONResponse
-            from ..context import reset_lcagent_billing_snapshot
 
             reset_process_request_meta()
             reset_request_authorization()
-            reset_process_session_id()
-            reset_lcagent_billing_snapshot()
             return JSONResponse(
                 status_code=401,
                 content={"detail": "请先登录 LCAgent 后再使用 lcClaw。"},
@@ -554,7 +538,6 @@ class AgentProcessUserInjectMiddleware(BaseHTTPMiddleware):
         finally:
             reset_process_request_meta()
             reset_request_authorization()
-            reset_process_session_id()
 
 
 # ---------------------------------------------------------------------------
