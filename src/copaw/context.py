@@ -41,6 +41,18 @@ _request_authorization: ContextVar[Optional[str]] = ContextVar(
     default=None,
 )
 
+# agent/process ``session_id`` (for cost audit billing).
+_process_session_id: ContextVar[Optional[str]] = ContextVar(
+    "process_session_id",
+    default=None,
+)
+
+# Billing snapshot survives middleware teardown during SSE streaming.
+_lcagent_billing_snapshot: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "lcagent_billing_snapshot",
+    default=None,
+)
+
 
 def set_current_working_dir(path: Optional[Path]) -> None:
     """Set the working directory for the current request context."""
@@ -97,6 +109,52 @@ def get_request_authorization() -> str:
 def reset_request_authorization() -> None:
     """Clear Authorization context."""
     _request_authorization.set(None)
+
+
+def set_process_session_id(session_id: Optional[str]) -> None:
+    """Store agent/process session_id for the current request."""
+    sid = (session_id or "").strip() or None
+    _process_session_id.set(sid)
+
+
+def get_process_session_id() -> Optional[str]:
+    """Return agent/process session_id (None if unset)."""
+    return _process_session_id.get()
+
+
+def reset_process_session_id() -> None:
+    """Clear process session_id context."""
+    _process_session_id.set(None)
+
+
+def set_lcagent_billing_snapshot(
+    *,
+    user_id: Optional[str],
+    meta: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+) -> None:
+    """Capture billing fields for the request (not cleared by middleware)."""
+    uid = (user_id or "").strip() or None
+    sid = (session_id or "").strip() or None
+    meta_copy = dict(meta) if isinstance(meta, dict) else {}
+    _lcagent_billing_snapshot.set(
+        {
+            "user_id": uid,
+            "meta": meta_copy,
+            "session_id": sid,
+        },
+    )
+
+
+def get_lcagent_billing_snapshot() -> Dict[str, Any]:
+    """Return billing snapshot dict (empty if unset)."""
+    snap = _lcagent_billing_snapshot.get()
+    return snap if isinstance(snap, dict) else {}
+
+
+def reset_lcagent_billing_snapshot() -> None:
+    """Clear billing snapshot (call when agent/process stream completes)."""
+    _lcagent_billing_snapshot.set(None)
 
 
 def get_current_working_dir() -> Path:

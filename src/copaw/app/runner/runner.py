@@ -1056,6 +1056,9 @@ class AgentRunner(Runner):
             self._request_llm_cfg_override = None
             if _meta_snapshot_for_restore is not None:
                 set_process_request_meta(_meta_snapshot_for_restore)
+            from ...context import reset_lcagent_billing_snapshot
+
+            reset_lcagent_billing_snapshot()
             reset_current_working_dir()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(
