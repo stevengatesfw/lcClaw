@@ -891,6 +891,23 @@ class AgentRunner(Runner):
                             f"{names_line}\n"
                         )
 
+            # Knowledge base context (injected regardless of enable_agent flag)
+            _kb_names = proc_meta.get("lcagent_knowledge_base_names")
+            if isinstance(_kb_names, list) and _kb_names:
+                _kb_ids = proc_meta.get("lcagent_knowledge_base_ids") or []
+                env_context += (
+                    "\n- 可用知识库（通过 search_knowledge_base 工具检索）:\n"
+                )
+                for _i, _name in enumerate(_kb_names):
+                    _kid = _kb_ids[_i] if _i < len(_kb_ids) else "?"
+                    env_context += f"  - {_name} (ID: {_kid})\n"
+                env_context += (
+                    "  仅当用户问题与这些知识库内容相关时调用 search_knowledge_base。"
+                    "回答时请引用来源文件。search_knowledge_base 返回的 kb_id 和 file_id "
+                    "可直接用于后续工具：用 open_kb_document 按行读取更多上下文，"
+                    "用 find_kb_document 在文件内定位关键词或正则表达式。\n"
+                )
+
             mcp_clients = await self._get_mcp_clients_for_user(storage_user_id)
 
             _root_cp = None

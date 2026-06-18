@@ -23,6 +23,9 @@ from .view_media import view_image, view_video
 from .memory_search import create_memory_search_tool
 from .get_current_time import get_current_time, set_user_timezone
 from .get_token_usage import get_token_usage
+from .search_knowledge_base import search_knowledge_base
+from .open_kb_document import open_kb_document
+from .find_kb_document import find_kb_document
 
 __all__ = [
     "execute_python_code",
@@ -44,4 +47,7 @@ __all__ = [
     "get_current_time",
     "set_user_timezone",
     "get_token_usage",
+    "search_knowledge_base",
+    "open_kb_document",
+    "find_kb_document",
 ]
