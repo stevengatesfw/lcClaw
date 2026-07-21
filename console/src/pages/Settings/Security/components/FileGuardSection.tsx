@@ -164,7 +164,7 @@ export function FileGuardSection({ onSave }: FileGuardSectionProps = {}) {
         <Space.Compact style={{ width: "100%" }}>
           <Input
             value={newPath}
-            onChange={(e) => setNewPath(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPath(e.target.value)}
             placeholder={t("security.fileGuard.inputPlaceholder")}
             onPressEnter={handleAdd}
             allowClear

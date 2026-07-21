@@ -53,13 +53,19 @@ from .tools import (
     create_memory_search_tool,
 )
 from .tools.lcagent_app import invoke_lcagent_published_app
+
 from .tools.lcagent_media import (
     body_already_has_invoke_media,
     invoke_lcagent_user_appendix_for_body,
     reset_invoke_lcagent_media_state,
 )
+
+from .tools.find_kb_document import find_kb_document
+from .tools.open_kb_document import open_kb_document
+from .tools.search_knowledge_base import search_knowledge_base
+>>>>>>> 56d7e4c
 from .utils import process_file_and_media_blocks_in_message
-from ..context import get_current_working_dir
+from ..context import get_current_working_dir, get_process_request_meta
 from ..providers.models import ResolvedModelConfig
 from ..constant import (
     WORKING_DIR,
@@ -332,6 +338,32 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                 tool_name,
                 async_exec,
             )
+
+        # Conditional KB tools — only register when user selected KBs
+        _kb_count = int(
+            get_process_request_meta().get("lcagent_knowledge_base_count") or 0,
+        )
+        if _kb_count > 0:
+            for _kb_tool in (
+                search_knowledge_base,
+                open_kb_document,
+                find_kb_document,
+            ):
+                _kb_tool_name = _kb_tool.__name__
+                if not enabled_tools.get(_kb_tool_name, True):
+                    continue
+                try:
+                    toolkit.register_tool_function(
+                        _kb_tool,
+                        namesake_strategy=namesake_strategy,
+                    )
+                    logger.debug(
+                        "Registered tool: %s (kb_count=%s)",
+                        _kb_tool_name,
+                        _kb_count,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to register %s: %s", _kb_tool_name, e)
 
         # Auto-register background task management tools if any *enabled*
         # tool has async_execution set
