@@ -53,6 +53,11 @@ from .tools import (
     create_memory_search_tool,
 )
 from .tools.lcagent_app import invoke_lcagent_published_app
+from .tools.lcagent_media import (
+    body_already_has_invoke_media,
+    invoke_lcagent_user_appendix_for_body,
+    reset_invoke_lcagent_media_state,
+)
 from .utils import process_file_and_media_blocks_in_message
 from ..context import get_current_working_dir
 from ..providers.models import ResolvedModelConfig
@@ -875,6 +880,8 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         """
 
         if not getattr(self, "_in_summarizing", False):
+            if last:
+                self._maybe_merge_invoke_lcagent_into_body(msg)
             return await super().print(msg, last, speech=speech)
 
         original = msg.content
@@ -911,6 +918,36 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         "Maximum iterations reached for this round. "
         "Please send a new message to continue."
     )
+
+    @staticmethod
+    def _append_text_to_msg(msg: Msg, extra: str) -> None:
+        piece = (extra or "").strip()
+        if not piece:
+            return
+        if isinstance(msg.content, str):
+            base = msg.content.rstrip()
+            msg.content = f"{base}\n\n{piece}" if base else piece
+            return
+        if isinstance(msg.content, list):
+            msg.content.append({"type": "text", "text": piece})
+            return
+        msg.content = piece
+
+    def _maybe_merge_invoke_lcagent_into_body(self, msg: Msg) -> None:
+        """Platform fallback: append invoke reply when the model omitted media."""
+        if getattr(self, "_invoke_body_merge_done", False):
+            return
+        if getattr(msg, "role", None) != "assistant":
+            return
+        appendix = invoke_lcagent_user_appendix_for_body()
+        if not appendix:
+            return
+        current = msg.get_text_content() if hasattr(msg, "get_text_content") else ""
+        if body_already_has_invoke_media(current or ""):
+            self._invoke_body_merge_done = True
+            return
+        self._append_text_to_msg(msg, appendix)
+        self._invoke_body_merge_done = True
 
     @staticmethod
     def _strip_tool_use_from_msg(msg: Msg) -> Msg:
@@ -1053,6 +1090,8 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         set_current_recent_max_bytes(
             self._agent_config.running.tool_result_compact.recent_max_bytes,
         )
+        reset_invoke_lcagent_media_state()
+        self._invoke_body_merge_done = False
 
         # Process file and media blocks in messages
         if msg is not None:
@@ -1108,10 +1147,14 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         channel_name = request_context.get("channel", "console")
         workspace_dir = Path(self._workspace_dir or WORKING_DIR)
         with apply_skill_config_env_overrides(workspace_dir, channel_name):
-            return await super().reply(
-                msg=msg,
-                structured_model=structured_model,
-            )
+            try:
+                return await super().reply(
+                    msg=msg,
+                    structured_model=structured_model,
+                )
+            finally:
+                reset_invoke_lcagent_media_state()
+                self._invoke_body_merge_done = False
 
     async def interrupt(self, msg: Msg | list[Msg] | None = None) -> None:
         """Interrupt the current reply process and wait for cleanup."""
