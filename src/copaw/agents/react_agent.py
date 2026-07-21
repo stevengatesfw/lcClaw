@@ -63,7 +63,6 @@ from .tools.lcagent_media import (
 from .tools.find_kb_document import find_kb_document
 from .tools.open_kb_document import open_kb_document
 from .tools.search_knowledge_base import search_knowledge_base
->>>>>>> 56d7e4c
 from .utils import process_file_and_media_blocks_in_message
 from ..context import get_current_working_dir, get_process_request_meta
 from ..providers.models import ResolvedModelConfig
