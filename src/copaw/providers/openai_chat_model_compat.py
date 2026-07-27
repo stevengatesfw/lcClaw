@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from copaw.local_models.tag_parser import (
     parse_tool_calls_from_text,
+    strip_gemma_channel_markup,
     text_contains_tool_call_tag,
 )
 
@@ -308,5 +309,15 @@ class OpenAIChatModelCompat(OpenAIChatModel):
                 )
                 if extra:
                     parsed.content = list(parsed.content) + extra
+
+            for block in parsed.content:
+                if block.get("type") == "thinking":
+                    block["thinking"] = strip_gemma_channel_markup(
+                        block.get("thinking") or "",
+                    )
+                elif block.get("type") == "text":
+                    block["text"] = strip_gemma_channel_markup(
+                        block.get("text") or "",
+                    )
 
             yield parsed
