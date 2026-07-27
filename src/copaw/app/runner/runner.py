@@ -30,6 +30,7 @@ from .command_dispatch import (
 )
 from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
 from .lcagent_published_apps_fetch import fetch_visible_published_apps_async
+from .lcagent_token_report import report_tokens_after_run
 from .query_error_dump import write_query_error_dump
 from .session import SafeJSONSession
 from .utils import build_env_context
@@ -59,6 +60,7 @@ from ...context import (
     set_process_request_meta,
 )
 from ...providers.models import ResolvedModelConfig
+from ...token_usage import get_token_usage_manager
 from ...security.tool_guard.approval import ApprovalDecision
 from ...security.tool_guard.models import TOOL_GUARD_DENIED_MARK
 from ..mcp import MCPClientManager
@@ -616,6 +618,13 @@ class AgentRunner(Runner):
         mgr = None
         session_state_loaded = False
         _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
+        _token_snapshot_before = None
+        try:
+            _token_snapshot_before = await get_token_usage_manager(
+                logical_user_id if logical_user_id else None,
+            ).get_summary()
+        except Exception:
+            logger.warning("Token snapshot before run failed", exc_info=True)
         try:
             self._request_llm_cfg_override = _llm_cfg_from_process_meta()
             if self._request_llm_cfg_override is None:
@@ -1093,6 +1102,53 @@ class AgentRunner(Runner):
 
             if mgr is not None and chat is not None:
                 await mgr.update_chat(chat)
+
+            if _token_snapshot_before is not None:
+                try:
+                    _token_mgr = get_token_usage_manager(
+                        logical_user_id if logical_user_id else None,
+                    )
+                    _after = await _token_mgr.get_summary()
+                    _pt_delta = max(
+                        _after.total_prompt_tokens
+                        - _token_snapshot_before.total_prompt_tokens,
+                        0,
+                    )
+                    _ct_delta = max(
+                        _after.total_completion_tokens
+                        - _token_snapshot_before.total_completion_tokens,
+                        0,
+                    )
+                    if _pt_delta > 0 or _ct_delta > 0:
+                        _meta = get_process_request_meta()
+                        _console_base = str(
+                            _meta.get("lcagent_console_api_base") or "",
+                        ).strip()
+                        _tid = (
+                            str(_meta.get("lcagent_tenant_id") or "")
+                            .strip()
+                            or None
+                        )
+                        _model = (
+                            self._request_llm_cfg_override.model
+                            if self._request_llm_cfg_override
+                            else None
+                        )
+                        asyncio.create_task(
+                            report_tokens_after_run(
+                                console_api_base=_console_base,
+                                user_id=logical_user_id,
+                                prompt_tokens=_pt_delta,
+                                completion_tokens=_ct_delta,
+                                session_id=session_id or None,
+                                tenant_id=_tid,
+                                model_name=_model,
+                            ),
+                        )
+                except Exception:
+                    logger.warning(
+                        "Token report snapshot failed", exc_info=True,
+                    )
 
     async def _cleanup_denied_session_memory(
         self,
