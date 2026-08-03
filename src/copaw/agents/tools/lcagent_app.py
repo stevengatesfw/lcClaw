@@ -1,5 +1,8 @@
 """LCAgent platform callbacks (Flask console API) from CoPaw tools."""
-from __future__ import annotations
+# NOTE: do NOT add `from __future__ import annotations` here. agentscope's
+# _parse_tool_function reads raw param.annotation and feeds it to a dynamic
+# pydantic model; stringized annotations (e.g. 'Literal[...]') cannot be
+# resolved in pydantic's rebuild namespace and raise class-not-fully-defined.
 
 import json
 import logging
