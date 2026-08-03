@@ -54,7 +54,7 @@ export function EnvRow({
             value={row.key}
             placeholder="Variable Name"
             disabled={!row.isNew}
-            onChange={(e) => onChange(idx, "key", e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange(idx, "key", e.target.value)}
             className={styles.inputField}
             autoFocus={row.isNew}
           />
@@ -66,7 +66,7 @@ export function EnvRow({
             value={row.value}
             placeholder="Value"
             type={isPasswordVisible ? "text" : "password"}
-            onChange={(e) => onChange(idx, "value", e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange(idx, "value", e.target.value)}
             className={styles.inputField}
             suffix={
               <button

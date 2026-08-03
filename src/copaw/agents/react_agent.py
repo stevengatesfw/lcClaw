@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Type, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Type
 
 from agentscope.agent import ReActAgent
 from agentscope.memory import InMemoryMemory
@@ -19,7 +19,13 @@ from agentscope.tool import Toolkit
 from anyio import ClosedResourceError
 from pydantic import BaseModel
 
+from ..agents.memory import BaseMemoryManager
 from ..app.mcp import HttpStatefulClient, StdIOStatefulClient
+from ..constant import (
+    WORKING_DIR,
+)
+from ..context import get_current_working_dir, get_process_request_meta
+from ..providers.models import ResolvedModelConfig
 from .command_handler import CommandHandler
 from .hooks import BootstrapHook, MemoryCompactionHook
 from .model_factory import create_model_and_formatter
@@ -37,6 +43,7 @@ from .skills_manager import (
 from .tool_guard_mixin import ToolGuardMixin
 from .tools import (
     browser_use,
+    create_memory_search_tool,
     desktop_screenshot,
     edit_file,
     execute_shell_command,
@@ -50,16 +57,12 @@ from .tools import (
     view_image,
     view_video,
     write_file,
-    create_memory_search_tool,
 )
-from .tools.lcagent_app import invoke_lcagent_published_app
+from .tools.find_kb_document import find_kb_document
+from .tools.lcagent_app import invoke_lcagent_published_app, manage_lcagent_workflow
+from .tools.open_kb_document import open_kb_document
+from .tools.search_knowledge_base import search_knowledge_base
 from .utils import process_file_and_media_blocks_in_message
-from ..context import get_current_working_dir
-from ..providers.models import ResolvedModelConfig
-from ..constant import (
-    WORKING_DIR,
-)
-from ..agents.memory import BaseMemoryManager
 
 if TYPE_CHECKING:
     from ..config.config import AgentProfileConfig
@@ -285,6 +288,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             "set_user_timezone": set_user_timezone,
             "get_token_usage": get_token_usage,
             "invoke_lcagent_published_app": invoke_lcagent_published_app,
+            "manage_lcagent_workflow": manage_lcagent_workflow,
         }
 
         multimodal = get_active_model_supports_multimodal()
@@ -297,7 +301,10 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                 continue
 
             if (
-                tool_name == "invoke_lcagent_published_app"
+                tool_name in (
+                    "invoke_lcagent_published_app",
+                    "manage_lcagent_workflow",
+                )
                 and not enable_agent_mode
             ):
                 logger.debug(
@@ -327,6 +334,32 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                 tool_name,
                 async_exec,
             )
+
+        # Conditional KB tools — only register when user selected KBs
+        _kb_count = int(
+            get_process_request_meta().get("lcagent_knowledge_base_count") or 0,
+        )
+        if _kb_count > 0:
+            for _kb_tool in (
+                search_knowledge_base,
+                open_kb_document,
+                find_kb_document,
+            ):
+                _kb_tool_name = _kb_tool.__name__
+                if not enabled_tools.get(_kb_tool_name, True):
+                    continue
+                try:
+                    toolkit.register_tool_function(
+                        _kb_tool,
+                        namesake_strategy=namesake_strategy,
+                    )
+                    logger.debug(
+                        "Registered tool: %s (kb_count=%s)",
+                        _kb_tool_name,
+                        _kb_count,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to register %s: %s", _kb_tool_name, e)
 
         # Auto-register background task management tools if any *enabled*
         # tool has async_execution set
@@ -1045,8 +1078,8 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         """
         # Set workspace_dir and recent_max_bytes in context for tool functions
         from ..config.context import (
-            set_current_workspace_dir,
             set_current_recent_max_bytes,
+            set_current_workspace_dir,
         )
 
         set_current_workspace_dir(self._workspace_dir)
