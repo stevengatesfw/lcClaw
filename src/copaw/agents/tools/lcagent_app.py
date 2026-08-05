@@ -1,10 +1,12 @@
-# -*- coding: utf-8 -*-
 """LCAgent platform callbacks (Flask console API) from CoPaw tools."""
-from __future__ import annotations
+# NOTE: do NOT add `from __future__ import annotations` here. agentscope's
+# _parse_tool_function reads raw param.annotation and feeds it to a dynamic
+# pydantic model; stringized annotations (e.g. 'Literal[...]') cannot be
+# resolved in pydantic's rebuild namespace and raise class-not-fully-defined.
 
 import json
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from agentscope.message import TextBlock
@@ -129,3 +131,121 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
         register_invoke_lcagent_reply(reply_text)
         return _lcagent_tool_text(reply_text)
     return _lcagent_tool_text(snippet)
+
+
+def manage_lcagent_workflow(
+    action: Literal["catalog", "validate", "get_change_set"],
+    app_id: str = "",
+    patch_json: str = "",
+    change_set_id: str = "",
+    create_app_name: str = "",
+    create_app_description: str = "",
+    base_revision: str = "",
+) -> ToolResponse:
+    """读取工作流编辑目录或生成待用户确认的工作流变更集。
+
+    此工具只能读取和预校验，不能确认、发布或删除应用。``validate`` 成功后必须
+    告知用户在 LCAgent 首页卡片中检查差异并点击确认，不得声称修改已经生效。
+
+    Args:
+        action: ``catalog`` 获取组件/资源目录；``validate`` 预校验 Patch；
+            ``get_change_set`` 查询变更集状态。
+        app_id: 修改已有应用时的应用 UUID；留空表示创建新应用。
+        patch_json: ``validate`` 所需的 JSON，格式为
+            ``{"summary":"...","operations":[...]}``。
+        change_set_id: ``get_change_set`` 所需的变更集 ID。
+        create_app_name: 创建应用时的名称。
+        create_app_description: 创建应用时的描述。
+        base_revision: 修改已有草稿时可选的基础版本哈希。
+
+    Returns:
+        包含结构化目录、诊断或 ``lcagent_change_set`` 的 JSON。变更集仍需用户确认。
+    """
+    meta = get_process_request_meta()
+    base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
+    auth = get_request_authorization().strip()
+    if not base:
+        return _lcagent_tool_text("错误：缺少 lcagent_console_api_base。")
+    if not auth:
+        return _lcagent_tool_text("错误：缺少 Authorization，无法访问工作流。")
+
+    method = "GET"
+    payload = None
+    if action == "catalog":
+        path = "/console/api/workflow-editing/catalog"
+    elif action == "get_change_set":
+        if not change_set_id.strip():
+            return _lcagent_tool_text("错误：get_change_set 需要 change_set_id。")
+        path = f"/console/api/workflow-editing/change-sets/{change_set_id.strip()}"
+    elif action == "validate":
+        try:
+            patch = json.loads(patch_json)
+        except json.JSONDecodeError as exc:
+            return _lcagent_tool_text(f"错误：patch_json 不是合法 JSON: {exc}")
+        if not isinstance(patch, dict):
+            return _lcagent_tool_text("错误：patch_json 顶层必须是对象。")
+        if app_id.strip():
+            target = {
+                "kind": "workflow",
+                "mode": "existing",
+                "app_id": app_id.strip(),
+            }
+        else:
+            if not create_app_name.strip():
+                return _lcagent_tool_text(
+                    "错误：创建新应用时需要 create_app_name。",
+                )
+            target = {
+                "kind": "workflow",
+                "mode": "create",
+                "name": create_app_name.strip(),
+                "description": create_app_description.strip(),
+            }
+        path = "/console/api/workflow-editing/change-sets/validate"
+        method = "POST"
+        payload = {
+            "target": target,
+            "patch": patch,
+            **({"baseRevision": base_revision.strip()} if base_revision.strip() else {}),
+        }
+    else:
+        return _lcagent_tool_text(f"错误：不支持的 action: {action}")
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+            response = client.request(
+                method,
+                f"{base}{path}",
+                json=payload,
+                headers={
+                    "Authorization": auth,
+                    "Content-Type": "application/json",
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.warning("manage_lcagent_workflow: request error %s", exc)
+        return _lcagent_tool_text(f"访问 LCAgent 工作流接口失败: {exc}")
+
+    try:
+        body: Any = response.json()
+    except json.JSONDecodeError:
+        body = {"message": (response.text or "")[:1000]}
+    if response.status_code >= 400:
+        return _lcagent_tool_text(
+            json.dumps(
+                {
+                    "ok": False,
+                    "httpStatus": response.status_code,
+                    "error": body,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    if action == "validate" and isinstance(body, dict):
+        body = {
+            "kind": "lcagent_change_set",
+            "requiresUserConfirmation": True,
+            **body,
+        }
+    return _lcagent_tool_text(json.dumps(body, ensure_ascii=False))
