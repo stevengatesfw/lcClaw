@@ -37,6 +37,9 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
     meta 中可能还有 lcagent_published_app_name / lcagent_published_app_description，
     回答用户「应用是做什么的」时请用这些信息。
 
+    lcagent_published_apps 列表的每个条目带 ``kind`` 字段：``agent`` 为独立 agent 应用
+    （表单化配置、非工作流编排），``workflow`` 为工作流应用；两类调用方式完全相同。
+
     Args:
         query: 转发给应用的用户问题或指令。
         app_id: LCAgent 应用 UUID；空字符串时使用 meta.lcagent_published_app_id。
@@ -139,6 +142,10 @@ def manage_lcagent_workflow(
 
     此工具只能读取和预校验，不能确认、发布或删除应用。``validate`` 成功后必须
     告知用户在 LCAgent 首页卡片中检查差异并点击确认，不得声称修改已经生效。
+    创建前必须先调用 ``catalog``：新画布已自带 ``__start__``/``__end__``，
+    禁止重复添加；模型字段必须原样复制 ``resources.models[].nodeConfig``，不得
+    根据模型名猜测 source/model_id。用户确认后用 ``get_change_set`` 核验
+    ``status=applied`` 和 ``target.appId``，否则应用仍未创建。
 
     Args:
         action: ``catalog`` 获取组件/资源目录；``validate`` 预校验 Patch；
@@ -146,6 +153,11 @@ def manage_lcagent_workflow(
         app_id: 修改已有应用时的应用 UUID；留空表示创建新应用。
         patch_json: ``validate`` 所需的 JSON，格式为
             ``{"summary":"...","operations":[...]}``。
+            除增删节点/连线/更新配置外，还支持资源绑定操作：
+            ``{"type":"bind_resource","node_id":"...","resource_type":
+            "skill|mcp|knowledge|database|tool|app","resource_id":"..."}``
+            与同形状的 ``unbind_resource``；绑定在用户确认变更集时与图写入
+            同一事务生效，validate 期会校验资源存在性。
         change_set_id: ``get_change_set`` 所需的变更集 ID。
         create_app_name: 创建应用时的名称。
         create_app_description: 创建应用时的描述。
@@ -238,6 +250,131 @@ def manage_lcagent_workflow(
     if action == "validate" and isinstance(body, dict):
         body = {
             "kind": "lcagent_change_set",
+            "requiresUserConfirmation": True,
+            "creationState": "pending_not_created",
+            "nextAction": "请用户在 LCAgent 首页 ChangeSet 卡片检查 Diff 并点击确认",
+            **body,
+        }
+    elif action == "get_change_set" and isinstance(body, dict):
+        status = body.get("status")
+        body["creationState"] = (
+            "created" if status == "applied" and (body.get("target") or {}).get("appId")
+            else "pending_not_created" if status == "pending"
+            else "not_created"
+        )
+    return _lcagent_tool_text(json.dumps(body, ensure_ascii=False))
+
+
+def manage_lcagent_agent(
+    action: Literal["catalog", "get_agent", "propose", "get_change_set"],
+    app_id: str = "",
+    patch_json: str = "",
+    change_set_id: str = "",
+    create_app_name: str = "",
+    create_app_description: str = "",
+    base_revision: str = "",
+) -> ToolResponse:
+    """读取独立 Agent 目录/配置，或生成待用户确认的 Agent 变更集。
+
+    此工具只能读取和预校验，不能确认或发布。``propose`` 成功后必须告知用户
+    在 LCAgent 首页卡片中检查差异并点击确认，不得声称修改已经生效。
+
+    Args:
+        action: ``catalog`` 获取 Agent 默认配置与资源目录；``get_agent`` 读取
+            某个独立 Agent 的当前配置与 baseRevision；``propose`` 预校验 AgentPatch；
+            ``get_change_set`` 查询变更集状态。
+        app_id: 修改已有 Agent 时的应用 UUID；留空表示创建新 Agent。
+        patch_json: ``propose`` 所需的 JSON，格式为
+            ``{"summary":"...","operations":[...]}``，operations 支持
+            update_identity / update_strategy / update_model /
+            update_capabilities(list+op:add|remove|set+values) / update_limits /
+            update_output_schema / update_system_prompt / update_human_policy。
+        change_set_id: ``get_change_set`` 所需的变更集 ID。
+        create_app_name: 创建新 Agent 时的名称。
+        create_app_description: 创建新 Agent 时的描述。
+        base_revision: 修改已有 Agent 时可选的基础版本哈希。
+
+    Returns:
+        包含结构化目录、诊断或 ``lcagent_agent_change_set`` 的 JSON。变更集仍需用户确认。
+    """
+    meta = get_process_request_meta()
+    base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
+    auth = get_request_authorization().strip()
+    if not base:
+        return _lcagent_tool_text("错误：缺少 lcagent_console_api_base。")
+    if not auth:
+        return _lcagent_tool_text("错误：缺少 Authorization，无法访问 Agent。")
+
+    method = "GET"
+    payload = None
+    if action == "catalog":
+        path = "/console/api/agent-editing/catalog"
+    elif action == "get_agent":
+        if not app_id.strip():
+            return _lcagent_tool_text("错误：get_agent 需要 app_id。")
+        path = f"/console/api/agent-editing/apps/{app_id.strip()}/agent"
+    elif action == "get_change_set":
+        if not change_set_id.strip():
+            return _lcagent_tool_text("错误：get_change_set 需要 change_set_id。")
+        path = f"/console/api/agent-editing/change-sets/{change_set_id.strip()}"
+    elif action == "propose":
+        try:
+            patch = json.loads(patch_json)
+        except json.JSONDecodeError as exc:
+            return _lcagent_tool_text(f"错误：patch_json 不是合法 JSON: {exc}")
+        if not isinstance(patch, dict):
+            return _lcagent_tool_text("错误：patch_json 顶层必须是对象。")
+        if app_id.strip():
+            target = {"kind": "agent", "mode": "existing", "app_id": app_id.strip()}
+        else:
+            if not create_app_name.strip():
+                return _lcagent_tool_text("错误：创建新 Agent 时需要 create_app_name。")
+            target = {
+                "kind": "agent",
+                "mode": "create",
+                "name": create_app_name.strip(),
+                "description": create_app_description.strip(),
+            }
+        path = "/console/api/agent-editing/change-sets/validate"
+        method = "POST"
+        payload = {
+            "target": target,
+            "patch": patch,
+            **({"baseRevision": base_revision.strip()} if base_revision.strip() else {}),
+        }
+    else:
+        return _lcagent_tool_text(f"错误：不支持的 action: {action}")
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+            response = client.request(
+                method,
+                f"{base}{path}",
+                json=payload,
+                headers={
+                    "Authorization": auth,
+                    "Content-Type": "application/json",
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.warning("manage_lcagent_agent: request error %s", exc)
+        return _lcagent_tool_text(f"访问 LCAgent Agent 接口失败: {exc}")
+
+    try:
+        body: Any = response.json()
+    except json.JSONDecodeError:
+        body = {"message": (response.text or "")[:1000]}
+    if response.status_code >= 400:
+        return _lcagent_tool_text(
+            json.dumps(
+                {"ok": False, "httpStatus": response.status_code, "error": body},
+                ensure_ascii=False,
+            ),
+        )
+
+    if action == "propose" and isinstance(body, dict):
+        body = {
+            "kind": "lcagent_agent_change_set",
             "requiresUserConfirmation": True,
             **body,
         }

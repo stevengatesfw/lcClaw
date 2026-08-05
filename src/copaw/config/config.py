@@ -1004,6 +1004,15 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             ),
             icon="🧩",
         ),
+        "manage_lcagent_agent": BuiltinToolConfig(
+            name="manage_lcagent_agent",
+            enabled=True,
+            description=(
+                "Inspect independent Agent configuration and prepare a validated "
+                "Agent change set that always requires explicit user confirmation"
+            ),
+            icon="🤖",
+        ),
     }
 
 

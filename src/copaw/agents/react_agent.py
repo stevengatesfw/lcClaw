@@ -59,7 +59,11 @@ from .tools import (
     write_file,
 )
 from .tools.find_kb_document import find_kb_document
-from .tools.lcagent_app import invoke_lcagent_published_app, manage_lcagent_workflow
+from .tools.lcagent_app import (
+    invoke_lcagent_published_app,
+    manage_lcagent_agent,
+    manage_lcagent_workflow,
+)
 from .tools.open_kb_document import open_kb_document
 from .tools.search_knowledge_base import search_knowledge_base
 from .utils import process_file_and_media_blocks_in_message
@@ -289,6 +293,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             "get_token_usage": get_token_usage,
             "invoke_lcagent_published_app": invoke_lcagent_published_app,
             "manage_lcagent_workflow": manage_lcagent_workflow,
+            "manage_lcagent_agent": manage_lcagent_agent,
         }
 
         multimodal = get_active_model_supports_multimodal()
@@ -304,6 +309,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                 tool_name in (
                     "invoke_lcagent_published_app",
                     "manage_lcagent_workflow",
+                    "manage_lcagent_agent",
                 )
                 and not enable_agent_mode
             ):
