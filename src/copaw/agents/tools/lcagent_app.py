@@ -140,12 +140,18 @@ def manage_lcagent_workflow(
 ) -> ToolResponse:
     """读取工作流编辑目录或生成待用户确认的工作流变更集。
 
-    此工具只能读取和预校验，不能确认、发布或删除应用。``validate`` 成功后必须
-    告知用户在 LCAgent 首页卡片中检查差异并点击确认，不得声称修改已经生效。
-    创建前必须先调用 ``catalog``：新画布已自带 ``__start__``/``__end__``，
-    禁止重复添加；模型字段必须原样复制 ``resources.models[].nodeConfig``，不得
-    根据模型名猜测 source/model_id。用户确认后用 ``get_change_set`` 核验
-    ``status=applied`` 和 ``target.appId``，否则应用仍未创建。
+    此工具只能读取和预校验，不能确认、发布或删除应用。``validate`` 成功后，
+    当前聊天会直接渲染含 Diff 与确认/取消按钮的 ChangeSet 卡片；请引导用户在
+    对话内确认，不要让用户跳转首页寻找卡片，也不得声称修改已经生效。
+    创建前必须先调用 ``catalog``。目录是 V2 画布组件的唯一事实源：新画布已
+    自带 ``__start__``/``__end__``，禁止重复添加；按组件 ``modelKinds`` 选择模型，
+    并原样复制 ``resources.models[].nodeConfig``，不得根据模型名猜测 source/model_id。
+    ``patchSchema`` 定义可用 Patch 操作，``components[].configSchema`` 定义节点参数
+    类型、枚举、范围与默认值；模型条目的 ``capabilities`` 是该模型参数的更窄约束。
+    不得只看 ``editableFields`` 后猜测复杂参数。
+    独立 Agent 应用应使用 ``manage_lcagent_agent``；工作流里的 ``agent-v2`` /
+    ``database-agent-v2`` 是画布节点，仍使用本工具。用户确认后用
+    ``get_change_set`` 核验 ``status=applied`` 和 ``target.appId``，否则应用仍未创建。
 
     Args:
         action: ``catalog`` 获取组件/资源目录；``validate`` 预校验 Patch；
@@ -157,7 +163,19 @@ def manage_lcagent_workflow(
             ``{"type":"bind_resource","node_id":"...","resource_type":
             "skill|mcp|knowledge|database|tool|app","resource_id":"..."}``
             与同形状的 ``unbind_resource``；绑定在用户确认变更集时与图写入
-            同一事务生效，validate 期会校验资源存在性。
+            同一事务生效，validate 期会校验资源存在性。修复已有画布的重叠、
+            逆向布局或空边界参数可提交 ``{"type":"layout_graph"}``；平台还会
+            默认对 Agent 修改后的拓扑自动排版并推导空的开始/结束 Schema。
+            精确声明输入输出使用 ``set_workflow_io``；把某节点输出引用为另一节点
+            输入使用 ``bind_node_input``，由平台生成带字段 mapping 的边。普通
+            ``connect_nodes`` 仅用于无需字段 mapping 的控制流连接。分支/迭代条件
+            使用 ``bind_condition_reference``，迭代 ``source``/``keyReference``/
+            ``initialInput``/``customMapping`` 使用 ``bind_variable_reference``；
+            提示词内引用使用 ``insert_prompt_reference``（会同步占位符、结构化
+            ``payload__prompt_refs``/媒体 refs 与引用边）。目录的
+            ``resources.bindingSchemas``/``resources.resourceSchemas`` 说明 MCP、数据库、知识库、Skill 和已发布
+            工作流的资源列表、能力字段与绑定方式；MCP 条目中的 ``tools[].inputSchema``
+            仅用于读取工具参数，不要把敏感连接配置写入 Patch。
         change_set_id: ``get_change_set`` 所需的变更集 ID。
         create_app_name: 创建应用时的名称。
         create_app_description: 创建应用时的描述。
@@ -252,7 +270,7 @@ def manage_lcagent_workflow(
             "kind": "lcagent_change_set",
             "requiresUserConfirmation": True,
             "creationState": "pending_not_created",
-            "nextAction": "请用户在 LCAgent 首页 ChangeSet 卡片检查 Diff 并点击确认",
+            "nextAction": "请用户在当前聊天的 ChangeSet 卡片检查 Diff 并点击确认应用",
             **body,
         }
     elif action == "get_change_set" and isinstance(body, dict):
@@ -274,19 +292,29 @@ def manage_lcagent_agent(
     create_app_description: str = "",
     base_revision: str = "",
 ) -> ToolResponse:
-    """读取独立 Agent 目录/配置，或生成待用户确认的 Agent 变更集。
+    """读取独立 Agent 的隐藏固定画布/配置，或生成待确认的 Agent 变更集。
 
-    此工具只能读取和预校验，不能确认或发布。``propose`` 成功后必须告知用户
-    在 LCAgent 首页卡片中检查差异并点击确认，不得声称修改已经生效。
+    此工具只能读取和预校验，不能确认或发布。``propose`` 成功后，当前聊天会
+    直接渲染含具体改动与确认/取消按钮的 ChangeSet 卡片；请引导用户在对话内
+    确认，不要让用户跳转首页寻找卡片，也不得声称修改已经生效。
+    独立 Agent 并非“没有节点”：它本质上是隐藏的 V2 固定画布
+    ``__start__ → hidden-agent-v2 → __end__``。本工具通过 AgentPatch 修改中间
+    ``agent-v2`` 节点，并由平台自动重建端口、连线和整图。不要向用户声称独立
+    Agent 没有节点或不是画布实现。固定拓扑不支持添加其它节点；若用户确实要
+    任意增删节点，应创建/修改工作流应用并使用 ``manage_lcagent_workflow``。
 
     Args:
-        action: ``catalog`` 获取 Agent 默认配置与资源目录；``get_agent`` 读取
-            某个独立 Agent 的当前配置与 baseRevision；``propose`` 预校验 AgentPatch；
+        action: ``catalog`` 获取隐藏画布契约、Agent 默认配置与资源目录；
+            ``get_agent`` 读取某个独立 Agent 的当前配置、隐藏画布契约与
+            baseRevision；``propose`` 预校验 AgentPatch；
             ``get_change_set`` 查询变更集状态。
         app_id: 修改已有 Agent 时的应用 UUID；留空表示创建新 Agent。
         patch_json: ``propose`` 所需的 JSON，格式为
             ``{"summary":"...","operations":[...]}``，operations 支持
-            update_identity / update_strategy / update_model /
+            update_identity / update_strategy / update_model（应从
+            ``resources.models[]`` 选择模型，将该条目的 ``executorModelId``
+            传入 ``executorModelId``，并将其 ``nodeConfig`` 原样放入 operation
+            的 ``nodeConfig``）/
             update_capabilities(list+op:add|remove|set+values) / update_limits /
             update_output_schema / update_system_prompt / update_human_policy。
         change_set_id: ``get_change_set`` 所需的变更集 ID。
@@ -376,6 +404,7 @@ def manage_lcagent_agent(
         body = {
             "kind": "lcagent_agent_change_set",
             "requiresUserConfirmation": True,
+            "nextAction": "请用户在当前聊天的 ChangeSet 卡片检查改动并点击确认应用",
             **body,
         }
     return _lcagent_tool_text(json.dumps(body, ensure_ascii=False))
