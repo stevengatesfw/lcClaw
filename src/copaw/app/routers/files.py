@@ -228,6 +228,30 @@ def _fmt_dt(val):
     return str(val)
 
 
+def _resolve_path_under_users_dir(resource_path: str) -> Path:
+    """Map ``/files/preview/<rel>`` to a path under ``USERS_DIR``.
+
+    ``send_file._working_abspath_to_preview_url`` builds ``rel`` from the file's
+    path relative to ``USERS_DIR`` (e.g. ``<uid>/示例文档.docx`` or
+    ``<uid>/workspaces/default/project/file.docx``).
+    """
+    base = Path(USERS_DIR).resolve()
+    rel = (resource_path or "").strip().strip("/")
+    if not rel:
+        raise HTTPException(status_code=404, detail="Not found")
+    target = base
+    for seg in rel.replace("\\", "/").split("/"):
+        if not seg or seg in (".", ".."):
+            raise HTTPException(status_code=404, detail="Not found")
+        target = target / seg
+    target = target.resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+    return target
+
+
 def _ensure_workspace_preview_auth(request: Request, storage_user_key: str) -> None:
     """When LCAgent JWT is configured, only the owner may read ``users/.../``."""
     if not _get_platform_key():
@@ -266,16 +290,32 @@ async def preview_workspace_file(
     :func:`copaw.agents.tools.send_file._working_abspath_to_preview_url` from
     relative segments under ``USERS_DIR`` (flat or nested tenant dirs).
 
-    Paths without ``/workspaces/`` use the legacy absolute-file behavior.
+    Paths without ``/workspaces/`` are resolved under ``USERS_DIR`` (files saved
+    directly under ``users/<tenant>/``). Legacy absolute paths are still tried
+    when nothing exists under ``USERS_DIR``.
     """
     if _WORKSPACES not in resource_path:
-        path = Path(resource_path)
-        if not path.is_absolute():
-            path = Path("/" + resource_path)
-        path = path.resolve()
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(path, filename=path.name)
+        target = _resolve_path_under_users_dir(resource_path)
+        if not target.is_file():
+            # Legacy: treat as absolute filesystem path (older clients).
+            path = Path(resource_path)
+            if not path.is_absolute():
+                path = Path("/" + resource_path)
+            path = path.resolve()
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="Not found")
+            target = path
+        else:
+            base = Path(USERS_DIR).resolve()
+            parent_rel = str(target.parent.relative_to(base)).replace("\\", "/")
+            _ensure_workspace_preview_auth(request, parent_rel)
+        media, _ = mimetypes.guess_type(str(target))
+        return FileResponse(
+            path=str(target),
+            media_type=media or "application/octet-stream",
+            filename=target.name,
+            content_disposition_type="inline",
+        )
     head, tail = resource_path.split(_WORKSPACES, 1)
     head = head.strip().strip("/")
     tail = tail.strip().strip("/")

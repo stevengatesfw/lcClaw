@@ -868,12 +868,14 @@ class AgentRunner(Runner):
 
             if enable_agent and proc_meta.get("lcagent_console_api_base"):
                 env_context += (
-                    "\n- 已发布应用返回的路径与链接：\n"
-                    "  /app/upload/、/tmp/、/console/api/files/download?… 等"
-                    "在 **LCAgent 后端**，**不在** lcClaw 工作目录。"
-                    "勿用 read_file 等本地验证；有链接则原样给用户。\n"
-                    "  send_file_to_user 可传入上述绝对路径或完整 http(s) 下载链接；"
-                    "平台会将会话中注入的控制台地址拼成可预览的下载 URL。\n"
+                    "\n- 已发布应用（invoke_lcagent_published_app）返回的路径与链接：\n"
+                    "  /app/upload/、/tmp/、/console/api/files/download?… 等在 **LCAgent 后端**，"
+                    "**不在** lcClaw 工作目录。勿用 read_file 等本地工具读取。\n"
+                    "  **规则**：invoke 的 reply 若已含图片 Markdown 或上述路径，"
+                    "**原样写入面向用户的最终正文**，**禁止**再调用 send_file_to_user。\n"
+                    "  send_file_to_user 仅用于 **本机工作区** write_file 等生成的文件"
+                    "（/copaw/api/files/preview/… 或本地路径）；"
+                    "不要用它重复发送 invoke 已返回的 LCAgent 文件。\n"
                 )
                 if proc_meta.get("lcagent_user_attachment_paths"):
                     env_context += (

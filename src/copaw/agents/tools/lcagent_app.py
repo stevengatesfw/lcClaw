@@ -13,6 +13,7 @@ from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
 from ...context import get_process_request_meta, get_request_authorization
+from .lcagent_media import register_invoke_lcagent_reply
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,9 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
     Returns:
         ``ToolResponse``，正文为应用输出（可能含文件 URL）或错误说明。
         其中的 ``/app/upload/``、``/console/api/files/download`` 等资源在
-        **LCAgent 服务器** 上，勿在当前环境用本地文件工具去读取；
-        把链接或 Markdown 原样给用户即可。
+        **LCAgent 服务器** 上，勿在当前环境用本地文件工具去读取。
+        **将本工具返回的 Markdown / 路径原样写入面向用户的最终回复**；
+        若回复已含图片或文件链接，**不要**再调用 ``send_file_to_user``。
     """
     meta = get_process_request_meta()
     base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
@@ -121,11 +123,16 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
 
     result = data.get("result")
     if isinstance(result, dict) and "reply" in result:
-        return _lcagent_tool_text(str(result.get("reply") or ""))
+        reply_text = str(result.get("reply") or "")
+        register_invoke_lcagent_reply(reply_text)
+        return _lcagent_tool_text(reply_text)
     if isinstance(result, str):
+        register_invoke_lcagent_reply(result)
         return _lcagent_tool_text(result)
     if result is not None:
-        return _lcagent_tool_text(json.dumps(result, ensure_ascii=False))
+        reply_text = json.dumps(result, ensure_ascii=False)
+        register_invoke_lcagent_reply(reply_text)
+        return _lcagent_tool_text(reply_text)
     return _lcagent_tool_text(snippet)
 
 
