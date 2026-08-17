@@ -90,6 +90,52 @@ def _is_approval(text: str) -> bool:
     return normalized in _APPROVE_EXACT
 
 
+def _usage_field(record: Any, name: str, default: Any = 0) -> Any:
+    """兼容 pydantic 模型和普通 dict 的 token usage 记录。"""
+    if isinstance(record, dict):
+        return record.get(name, default)
+    return getattr(record, name, default)
+
+
+def _delta_billing_model_name(
+    before: Any | None,
+    after: Any | None,
+) -> Optional[str]:
+    """从 token 用量快照中提取本轮实际发生消耗的模型名。
+
+    首页助手的一次请求可能调用多个模型；只有一个模型发生增量时记真实
+    模型名，多个模型时与画布账单保持一致记「多模型」。
+    """
+    if before is None or after is None:
+        return None
+    before_models = getattr(before, "by_model", None)
+    after_models = getattr(after, "by_model", None)
+    if not isinstance(before_models, dict) or not isinstance(after_models, dict):
+        return None
+    changed: list[str] = []
+    for key, record in after_models.items():
+        previous = before_models.get(key)
+        pt = max(
+            int(_usage_field(record, "prompt_tokens") or 0)
+            - int(_usage_field(previous, "prompt_tokens") or 0),
+            0,
+        )
+        ct = max(
+            int(_usage_field(record, "completion_tokens") or 0)
+            - int(_usage_field(previous, "completion_tokens") or 0),
+            0,
+        )
+        if pt > 0 or ct > 0:
+            model = _usage_field(record, "model", None) or key
+            changed.append(str(model).strip() or str(key))
+    changed = list(dict.fromkeys(changed))
+    if len(changed) == 1:
+        return changed[0]
+    if len(changed) > 1:
+        return "多模型"
+    return None
+
+
 def _llm_cfg_from_process_meta() -> Optional[ResolvedModelConfig]:
     """Build ResolvedModelConfig from agent/process meta (LCAgent proxy)."""
     meta = get_process_request_meta()
@@ -619,6 +665,7 @@ class AgentRunner(Runner):
         session_state_loaded = False
         _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
         _token_snapshot_before = None
+        _billing_model_name: Optional[str] = None
         try:
             _token_snapshot_before = await get_token_usage_manager(
                 logical_user_id if logical_user_id else None,
@@ -630,6 +677,11 @@ class AgentRunner(Runner):
             if self._request_llm_cfg_override is None:
                 self._request_llm_cfg_override = (
                     await fetch_lcagent_home_llm_resolved_config()
+                )
+            if self._request_llm_cfg_override is not None:
+                _billing_model_name = (
+                    self._request_llm_cfg_override.model
+                    or None
                 )
             # Mirror HTTP /process behavior: when LCAgent injects meta, tools and
             # prompt helpers see ``lcagent_resolved_llm``. Channels and other
@@ -1081,6 +1133,9 @@ class AgentRunner(Runner):
                     ) + converted.args[1:]
             raise converted from e
         finally:
+            # 请求级模型名已固化到 _billing_model_name；这里先清理请求级
+            # 配置。若先清理再读取，下面的 token 上报只能拿到 None，
+            # 首页对话积分明细的模型列会一直是「-」。
             self._request_llm_cfg_override = None
             if _meta_snapshot_for_restore is not None:
                 set_process_request_meta(_meta_snapshot_for_restore)
@@ -1129,11 +1184,12 @@ class AgentRunner(Runner):
                             .strip()
                             or None
                         )
-                        _model = (
-                            self._request_llm_cfg_override.model
-                            if self._request_llm_cfg_override
-                            else None
-                        )
+                        # 优先使用 token usage 快照中的真实增量模型；快照不可用
+                        # 时再回退到请求解析出的首页模型配置。
+                        _model = _delta_billing_model_name(
+                            _token_snapshot_before,
+                            _after,
+                        ) or _billing_model_name
                         asyncio.create_task(
                             report_tokens_after_run(
                                 console_api_base=_console_base,
