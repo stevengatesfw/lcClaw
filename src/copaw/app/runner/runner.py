@@ -67,8 +67,11 @@ from ..mcp import MCPClientManager
 
 if TYPE_CHECKING:
     from ...agents.memory import BaseMemoryManager
+    from ...config.config import AgentProfileConfig
 
 logger = logging.getLogger(__name__)
+
+_LCAGENT_HOME_MAX_ITERS = 20
 
 _APPROVE_EXACT = frozenset(
     {
@@ -184,6 +187,29 @@ def _feature_flags_from_process_meta() -> tuple[bool, bool]:
         meta.get("lcagent_enable_skills"), default=True
     )
     return enable_agent, enable_skills
+
+
+def _limit_lcagent_home_max_iters(
+    agent_config: "AgentProfileConfig",
+    channel: str,
+) -> "AgentProfileConfig":
+    """Bound LCAgent homepage ReAct loops without mutating saved config."""
+    meta = get_process_request_meta()
+    if (
+        channel != DEFAULT_CHANNEL
+        or not str(meta.get("lcagent_console_api_base") or "").strip()
+        or agent_config.running.max_iters <= _LCAGENT_HOME_MAX_ITERS
+    ):
+        return agent_config
+
+    limited = agent_config.model_copy(deep=True)
+    limited.running.max_iters = _LCAGENT_HOME_MAX_ITERS
+    logger.info(
+        "Limit LCAgent homepage agent max_iters: configured=%s effective=%s",
+        agent_config.running.max_iters,
+        limited.running.max_iters,
+    )
+    return limited
 
 
 def _env_lcagent_console_api_base() -> str:
@@ -979,6 +1005,10 @@ class AgentRunner(Runner):
             agent_config = load_agent_config(
                 self.agent_id,
                 config_path=_root_cp,
+            )
+            agent_config = _limit_lcagent_home_max_iters(
+                agent_config,
+                channel,
             )
             if (
                 self._request_llm_cfg_override is not None
