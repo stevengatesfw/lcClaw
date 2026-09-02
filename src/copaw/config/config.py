@@ -995,6 +995,24 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             description="Get llm token usage",
             icon="📊",
         ),
+        "manage_lcagent_workflow": BuiltinToolConfig(
+            name="manage_lcagent_workflow",
+            enabled=True,
+            description=(
+                "Inspect workflow capabilities and prepare a validated workflow "
+                "change set that always requires explicit user confirmation"
+            ),
+            icon="🧩",
+        ),
+        "manage_lcagent_agent": BuiltinToolConfig(
+            name="manage_lcagent_agent",
+            enabled=True,
+            description=(
+                "Inspect independent Agent configuration and prepare a validated "
+                "Agent change set that always requires explicit user confirmation"
+            ),
+            icon="🤖",
+        ),
     }
 
 
