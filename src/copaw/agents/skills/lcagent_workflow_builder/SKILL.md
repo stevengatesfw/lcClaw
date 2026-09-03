@@ -2,7 +2,7 @@
 name: lcagent_workflow_builder
 description: "在 LCAgent 中创建或修改工作流：读取权威目录，正确使用自动起止节点与可用模型，生成待用户确认的 ChangeSet，并在确认后核验创建结果。"
 metadata:
-  builtin_skill_version: "3.1"
+  builtin_skill_version: "4.0"
   copaw:
     emoji: "🧩"
     requires: {}
@@ -14,7 +14,7 @@ metadata:
 
 ## 强制流程
 
-1. 先调用 `manage_lcagent_workflow(action="catalog")`，读取当前用户实时可用的组件、模型和资源。不要依赖记忆猜测目录内容。
+1. 若当前请求 meta 带编辑器 workspace binding，先调用对应工具的 `context`，并只编辑该绑定的 workflow/agent；需要细节时按稳定 ID 调用 `get_node` / `get_node_schema`。禁止传入另一个 app_id。随后调用 `manage_lcagent_workflow(action="catalog")` 读取实时组件、模型和资源。不要依赖记忆猜测目录内容。
    - `components[].nodeType` 是 `add_node.node_type` 的唯一合法取值。
    - `patchSchema` 是 Patch operation 的权威 JSON Schema；只使用其中声明的 operation 和字段。
    - `components[].configSchema` 是节点详细参数的权威 Schema；遵守类型、枚举、范围与 `additionalProperties`。
@@ -24,12 +24,13 @@ metadata:
    - `__start__`（开始节点）
    - `__end__`（结束节点）
    Patch 中禁止再次添加 `start` 或 `end`，只需连接这两个固定 ID。
-3. 组件的 `modelKinds` 非空时，只能选择 `resources.models[].kind` 与其匹配的模型，并把该条目的 `nodeConfig` 原样合并到 `add_node.config`。禁止自行填写或猜测：
+3. 组件的 `modelKinds` 非空时，只能选择 `resources.models[].kind` 与其匹配的模型。新增节点可先使用 Auto 默认值；选择明确模型时优先使用 `set_model.selection_id=resources.models[].id`，由服务端解析当前 catalog 配置。禁止自行填写或猜测：
    - `payload__model_source`
    - `payload__source`
    - `payload__base_model`
    - `payload__model_id`
    - 模型条目存在 `capabilities` 时，它是分辨率、比例、时长、帧率等模型相关参数的更窄约束；不得只按组件通用 `configSchema` 选择模型不支持的值。
+   - 高级参数使用 `set_advanced_parameters`，只传 `configSchema.properties.payload__model_generate_control` 声明的键。
 4. `payload__model_source` 的合法值只有 `online_model`、`inference_service`、`auto`。`agent-v2` / `database-agent-v2` 不支持 `auto`，必须使用 catalog 给出的明确模型配置。
 5. 用户明确要求输入输出时，使用 `set_workflow_io`。不要手写开始/结束节点的底层 `config__*ports` 或 `config__*shape`：
    - `inputs` 对应开始节点输出参数。
@@ -48,6 +49,8 @@ metadata:
    - 平台会把占位符写入 `payload__prompt`，并把 `{nodeId, sourcePortId, outputKey, valueType, ...}` 写入 `payload__prompt_refs` 或指定的媒体 refs 字段。
    - 文本默认 `reference_type="prompt"`；图像/视频/音频可使用 `reference_type="image"` 或明确 `reference_field`（如 `payload__base_image_refs`、`payload__first_frame_refs`）。
    - `path` 用于对象/数组下钻。该操作也会生成仅用于运行顺序的引用边。
+   - 设置提示词正文使用 `set_prompt`；它与引用操作同样进入 typed Canvas Patch，不要退回通用字段字典。
+   - 文本/图片/视频/音频和资源内容块使用 `set_content_block` / `remove_content_block`。媒体 `slot` 必须取 patchSchema 声明值，`value` 只保存已上传文件路径或非密钥资源引用；不得内联凭据。
 9. MCP、知识库、数据库、Skill 和已发布工作流是 AgentV2 的资源能力，不要把连接地址、密钥或检索配置内联进节点：
    - 先从 `resources.bindingSchemas`（同内容也在 `resources.resourceSchemas`）及对应资源列表选择实时 `resource_id`，再使用 `bind_resource`。
    - 对 `agent-v2` / `database-agent-v2`，平台会把绑定同步到 `payload__agent_config.capabilities`；不要使用已移除的 `toolIds`。

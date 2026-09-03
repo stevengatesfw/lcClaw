@@ -954,6 +954,16 @@ class AgentRunner(Runner):
                     )
 
             if enable_agent and proc_meta.get("lcagent_console_api_base"):
+                _workspace = proc_meta.get("lcagent_workspace")
+                if isinstance(_workspace, dict) and _workspace.get("id"):
+                    env_context += (
+                        "\n- 当前编辑器 workspace（服务端权威绑定）：\n"
+                        f"  - type: {_workspace.get('type')}\n"
+                        f"  - id: {_workspace.get('id')}\n"
+                        f"  - revision: {_workspace.get('revision') or ''}\n"
+                        "  必须先用对应 manage_lcagent_* 工具读取 context；"
+                        "不得读取或修改其它 app_id，Patch 必须携带当前 revision。\n"
+                    )
                 env_context += (
                     "\n- 已发布应用（invoke_lcagent_published_app）返回的路径与链接：\n"
                     "  /app/upload/、/tmp/、/console/api/files/download?… 等在 **LCAgent 后端**，"
