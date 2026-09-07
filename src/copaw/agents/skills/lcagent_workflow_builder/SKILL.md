@@ -2,7 +2,7 @@
 name: lcagent_workflow_builder
 description: "在 LCAgent 中创建或修改工作流：读取权威目录，正确使用自动起止节点与可用模型，生成待用户确认的 ChangeSet，并在确认后核验创建结果。"
 metadata:
-  builtin_skill_version: "4.0"
+  builtin_skill_version: "4.1"
   copaw:
     emoji: "🧩"
     requires: {}
@@ -127,3 +127,14 @@ metadata:
 - validate 成功：说“修改方案已生成，尚未生效”，并引导点击当前聊天卡片中的“确认应用”。不要重复输出冗长的手工操作步骤。
 - 确认核验成功：说“已创建/已应用”，给出 `target.appId`。
 - 不把 Schema、拓扑、编译校验通过描述为真实运行成功；validate 不调用模型和外部工具。
+
+## 运行调试与受控修复（run_lcagent_workflow）
+
+- 真实运行必须使用 `run_lcagent_workflow`，不得用编辑工具冒充运行，也不得声称 validate 成功即“运行成功”。
+- `start` 需要 `scope`（`node|downstream|workflow`）、`base_revision`（来自 `context` 的 revision）与输入；`node`/`downstream` 必须带稳定 `node_id`（来自 context/事件，不要用显示名），`downstream` 的边界输入键为 `"nodeId:inputName"`。
+- `start` 返回 `kind=lcagent_workflow_run` 的运行卡片后即返回，不阻塞等待长任务；后续用 `get_run` / `get_events`（带 `after_sequence` 续读）/ `get_node_result` 查看状态与节点结构化输入/输出/错误。
+- 高风险运行会返回 `approvalRequired=true` 并保持 `waiting_human`：提示用户在卡片中批准或拒绝；批准只执行已持久化的精确运行请求，禁止重新生成 scope 或 inputs。
+- 失败修复闭环必须按顺序：`get_run`/`get_events` 锁定 `node.failed` 的稳定 nodeId 与 `error.code` → `get_node`/`get_node_schema` 定位原因 → `manage_lcagent_workflow(action="validate")` 生成 ChangeSet → 用户确认 → `get_change_set` 核验 `status=applied` 与新 revision → `start` 新运行（`parent_run_id` 指向失败运行，`base_revision` 使用新 revision）。
+- ChangeSet 未确认、被拒绝、或返回 `REVISION_CONFLICT` 时，禁止声称“已修复”或直接重跑旧 revision。
+- `stop`/`resume` 只调用权威 API；`resumable=false` 的运行停止后不可继续，应创建新运行。
+

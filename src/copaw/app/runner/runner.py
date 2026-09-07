@@ -55,7 +55,9 @@ from ...context import (
     get_context_user_id,
     get_process_request_meta,
     get_request_authorization,
+    reset_current_session_id,
     reset_current_working_dir,
+    set_current_session_id,
     set_current_working_dir,
     set_process_request_meta,
 )
@@ -838,6 +840,9 @@ class AgentRunner(Runner):
 
             user_working_dir = get_user_working_dir(storage_user_id)
             set_current_working_dir(user_working_dir)
+            # 缓存可观测性（CacheDiagnostics）：让模型包装层能按 session 对比
+            # 相邻请求的公共前缀；只读用途，不参与任何业务分支。
+            set_current_session_id(session_id)
             wd = (
                 str(user_working_dir)
                 if copaw_storage_isolation_enabled()
@@ -1180,6 +1185,7 @@ class AgentRunner(Runner):
             if _meta_snapshot_for_restore is not None:
                 set_process_request_meta(_meta_snapshot_for_restore)
             reset_current_working_dir()
+            reset_current_session_id()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(
                     session_id=session_id,
@@ -1214,6 +1220,11 @@ class AgentRunner(Runner):
                         - _token_snapshot_before.total_completion_tokens,
                         0,
                     )
+                    _cached_delta = max(
+                        _after.total_cached_tokens
+                        - _token_snapshot_before.total_cached_tokens,
+                        0,
+                    )
                     if _pt_delta > 0 or _ct_delta > 0:
                         _meta = get_process_request_meta()
                         _console_base = str(
@@ -1239,6 +1250,7 @@ class AgentRunner(Runner):
                                 session_id=session_id or None,
                                 tenant_id=_tid,
                                 model_name=_model,
+                                prompt_cached_tokens=_cached_delta,
                             ),
                         )
                 except Exception:

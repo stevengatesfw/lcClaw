@@ -1013,6 +1013,15 @@ def _default_builtin_tools() -> Dict[str, BuiltinToolConfig]:
             ),
             icon="🤖",
         ),
+        "run_lcagent_workflow": BuiltinToolConfig(
+            name="run_lcagent_workflow",
+            enabled=True,
+            description=(
+                "Create, inspect, stop, or resume unified workflow debug runs "
+                "(node/downstream/workflow scopes) without blocking on execution"
+            ),
+            icon="▶️",
+        ),
     }
 
 

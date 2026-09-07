@@ -27,6 +27,14 @@ class TokenUsageStats(BaseModel):
 
     prompt_tokens: int = Field(0, ge=0)
     completion_tokens: int = Field(0, ge=0)
+    cached_tokens: int = Field(
+        0,
+        ge=0,
+        description=(
+            "Input tokens served from provider prefix cache "
+            "(observability only; old records default to 0)"
+        ),
+    )
     call_count: int = Field(0, ge=0)
 
 
@@ -50,6 +58,7 @@ class TokenUsageSummary(BaseModel):
 
     total_prompt_tokens: int = Field(0, ge=0)
     total_completion_tokens: int = Field(0, ge=0)
+    total_cached_tokens: int = Field(0, ge=0)
     total_calls: int = Field(0, ge=0)
     by_model: dict[str, TokenUsageByModel] = Field(
         default_factory=dict,
@@ -115,6 +124,7 @@ class TokenUsageManager:
         model_name: str,
         prompt_tokens: int,
         completion_tokens: int,
+        cached_tokens: int = 0,
         at_date: date | None = None,
     ) -> None:
         """Record token usage for a given provider, model and date.
@@ -124,6 +134,8 @@ class TokenUsageManager:
             model_name: Name of the model (e.g. "qwen3-max", "gpt-4").
             prompt_tokens: Number of input/prompt tokens.
             completion_tokens: Number of output/completion tokens.
+            cached_tokens: Input tokens hit in provider prefix cache
+                (CacheDiagnostics observability; 0 when unknown).
             at_date: Date to record under. Defaults to today (UTC).
         """
         if at_date is None:
@@ -131,6 +143,7 @@ class TokenUsageManager:
 
         date_str = at_date.isoformat()
         composite_key = f"{provider_id}:{model_name}"
+        cached_tokens = max(int(cached_tokens or 0), 0)
 
         async with self._file_lock:
             data = await self._load_data()
@@ -144,6 +157,7 @@ class TokenUsageManager:
                     "model_name": model_name,
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
+                    "cached_tokens": 0,
                     "call_count": 0,
                 }
 
@@ -152,6 +166,9 @@ class TokenUsageManager:
             entry.setdefault("model_name", model_name)
             entry["prompt_tokens"] += prompt_tokens
             entry["completion_tokens"] += completion_tokens
+            # 旧记录文件可能没有 cached_tokens 键：按 0 起算（additive 兼容）。
+            entry["cached_tokens"] = int(entry.get("cached_tokens") or 0)
+            entry["cached_tokens"] += cached_tokens
             entry["call_count"] += 1
 
             await self._save_data(data)
@@ -190,6 +207,7 @@ class TokenUsageManager:
                         model=rec_model,
                         prompt_tokens=entry.get("prompt_tokens", 0),
                         completion_tokens=entry.get("completion_tokens", 0),
+                        cached_tokens=int(entry.get("cached_tokens") or 0),
                         call_count=entry.get("call_count", 0),
                     ),
                 )
@@ -224,6 +242,7 @@ class TokenUsageManager:
 
         total_prompt = 0
         total_completion = 0
+        total_cached = 0
         total_calls = 0
         by_model_raw: dict[str, dict] = {}
         by_provider_raw: dict[str, dict] = {}
@@ -232,9 +251,11 @@ class TokenUsageManager:
         for r in records:
             pt = r.prompt_tokens
             ct = r.completion_tokens
+            cached = r.cached_tokens
             calls = r.call_count
             total_prompt += pt
             total_completion += ct
+            total_cached += cached
             total_calls += calls
 
             model = r.model
@@ -246,20 +267,24 @@ class TokenUsageManager:
                     "model": model,
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
+                    "cached_tokens": 0,
                     "call_count": 0,
                 }
             by_model_raw[composite]["prompt_tokens"] += pt
             by_model_raw[composite]["completion_tokens"] += ct
+            by_model_raw[composite]["cached_tokens"] += cached
             by_model_raw[composite]["call_count"] += calls
 
             if prov not in by_provider_raw:
                 by_provider_raw[prov] = {
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
+                    "cached_tokens": 0,
                     "call_count": 0,
                 }
             by_provider_raw[prov]["prompt_tokens"] += pt
             by_provider_raw[prov]["completion_tokens"] += ct
+            by_provider_raw[prov]["cached_tokens"] += cached
             by_provider_raw[prov]["call_count"] += calls
 
             dt = r.date
@@ -267,10 +292,12 @@ class TokenUsageManager:
                 by_date_raw[dt] = {
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
+                    "cached_tokens": 0,
                     "call_count": 0,
                 }
             by_date_raw[dt]["prompt_tokens"] += pt
             by_date_raw[dt]["completion_tokens"] += ct
+            by_date_raw[dt]["cached_tokens"] += cached
             by_date_raw[dt]["call_count"] += calls
 
         by_model = {
@@ -289,6 +316,7 @@ class TokenUsageManager:
         return TokenUsageSummary(
             total_prompt_tokens=total_prompt,
             total_completion_tokens=total_completion,
+            total_cached_tokens=total_cached,
             total_calls=total_calls,
             by_model=by_model,
             by_provider=by_provider,
