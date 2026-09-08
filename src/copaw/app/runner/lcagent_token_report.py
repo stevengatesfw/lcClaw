@@ -34,6 +34,7 @@ async def report_tokens_after_run(
     tenant_id: Optional[str] = None,
     model_name: Optional[str] = None,
     wallet_source: Optional[str] = None,
+    prompt_cached_tokens: int = 0,
 ) -> None:
     """Report token usage delta to LCAgent billing.
 
@@ -61,6 +62,7 @@ async def report_tokens_after_run(
         "user_id": user_id,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "prompt_cached_tokens": max(int(prompt_cached_tokens or 0), 0),
     }
     if session_id:
         payload["session_id"] = session_id
@@ -91,10 +93,11 @@ async def report_tokens_after_run(
                 )
             else:
                 logger.info(
-                    "Token report ok: user=%s pt=%d ct=%d model=%s",
+                    "Token report ok: user=%s pt=%d ct=%d cached=%d model=%s",
                     user_id,
                     prompt_tokens,
                     completion_tokens,
+                    max(int(prompt_cached_tokens or 0), 0),
                     model_name or "-",
                 )
     except Exception:

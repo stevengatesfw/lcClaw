@@ -2,7 +2,7 @@
 name: lcagent_workflow_builder
 description: "在 LCAgent 中创建或修改工作流：读取权威目录，正确使用自动起止节点与可用模型，生成待用户确认的 ChangeSet，并在确认后核验创建结果。"
 metadata:
-  builtin_skill_version: "3.1"
+  builtin_skill_version: "4.1"
   copaw:
     emoji: "🧩"
     requires: {}
@@ -14,7 +14,7 @@ metadata:
 
 ## 强制流程
 
-1. 先调用 `manage_lcagent_workflow(action="catalog")`，读取当前用户实时可用的组件、模型和资源。不要依赖记忆猜测目录内容。
+1. 若当前请求 meta 带编辑器 workspace binding，先调用对应工具的 `context`，并只编辑该绑定的 workflow/agent；需要细节时按稳定 ID 调用 `get_node` / `get_node_schema`。禁止传入另一个 app_id。随后调用 `manage_lcagent_workflow(action="catalog")` 读取实时组件、模型和资源。不要依赖记忆猜测目录内容。
    - `components[].nodeType` 是 `add_node.node_type` 的唯一合法取值。
    - `patchSchema` 是 Patch operation 的权威 JSON Schema；只使用其中声明的 operation 和字段。
    - `components[].configSchema` 是节点详细参数的权威 Schema；遵守类型、枚举、范围与 `additionalProperties`。
@@ -24,12 +24,13 @@ metadata:
    - `__start__`（开始节点）
    - `__end__`（结束节点）
    Patch 中禁止再次添加 `start` 或 `end`，只需连接这两个固定 ID。
-3. 组件的 `modelKinds` 非空时，只能选择 `resources.models[].kind` 与其匹配的模型，并把该条目的 `nodeConfig` 原样合并到 `add_node.config`。禁止自行填写或猜测：
+3. 组件的 `modelKinds` 非空时，只能选择 `resources.models[].kind` 与其匹配的模型。新增节点可先使用 Auto 默认值；选择明确模型时优先使用 `set_model.selection_id=resources.models[].id`，由服务端解析当前 catalog 配置。禁止自行填写或猜测：
    - `payload__model_source`
    - `payload__source`
    - `payload__base_model`
    - `payload__model_id`
    - 模型条目存在 `capabilities` 时，它是分辨率、比例、时长、帧率等模型相关参数的更窄约束；不得只按组件通用 `configSchema` 选择模型不支持的值。
+   - 高级参数使用 `set_advanced_parameters`，只传 `configSchema.properties.payload__model_generate_control` 声明的键。
 4. `payload__model_source` 的合法值只有 `online_model`、`inference_service`、`auto`。`agent-v2` / `database-agent-v2` 不支持 `auto`，必须使用 catalog 给出的明确模型配置。
 5. 用户明确要求输入输出时，使用 `set_workflow_io`。不要手写开始/结束节点的底层 `config__*ports` 或 `config__*shape`：
    - `inputs` 对应开始节点输出参数。
@@ -48,6 +49,8 @@ metadata:
    - 平台会把占位符写入 `payload__prompt`，并把 `{nodeId, sourcePortId, outputKey, valueType, ...}` 写入 `payload__prompt_refs` 或指定的媒体 refs 字段。
    - 文本默认 `reference_type="prompt"`；图像/视频/音频可使用 `reference_type="image"` 或明确 `reference_field`（如 `payload__base_image_refs`、`payload__first_frame_refs`）。
    - `path` 用于对象/数组下钻。该操作也会生成仅用于运行顺序的引用边。
+   - 设置提示词正文使用 `set_prompt`；它与引用操作同样进入 typed Canvas Patch，不要退回通用字段字典。
+   - 文本/图片/视频/音频和资源内容块使用 `set_content_block` / `remove_content_block`。媒体 `slot` 必须取 patchSchema 声明值，`value` 只保存已上传文件路径或非密钥资源引用；不得内联凭据。
 9. MCP、知识库、数据库、Skill 和已发布工作流是 AgentV2 的资源能力，不要把连接地址、密钥或检索配置内联进节点：
    - 先从 `resources.bindingSchemas`（同内容也在 `resources.resourceSchemas`）及对应资源列表选择实时 `resource_id`，再使用 `bind_resource`。
    - 对 `agent-v2` / `database-agent-v2`，平台会把绑定同步到 `payload__agent_config.capabilities`；不要使用已移除的 `toolIds`。
@@ -124,3 +127,14 @@ metadata:
 - validate 成功：说“修改方案已生成，尚未生效”，并引导点击当前聊天卡片中的“确认应用”。不要重复输出冗长的手工操作步骤。
 - 确认核验成功：说“已创建/已应用”，给出 `target.appId`。
 - 不把 Schema、拓扑、编译校验通过描述为真实运行成功；validate 不调用模型和外部工具。
+
+## 运行调试与受控修复（run_lcagent_workflow）
+
+- 真实运行必须使用 `run_lcagent_workflow`，不得用编辑工具冒充运行，也不得声称 validate 成功即“运行成功”。
+- `start` 需要 `scope`（`node|downstream|workflow`）、`base_revision`（来自 `context` 的 revision）与输入；`node`/`downstream` 必须带稳定 `node_id`（来自 context/事件，不要用显示名），`downstream` 的边界输入键为 `"nodeId:inputName"`。
+- `start` 返回 `kind=lcagent_workflow_run` 的运行卡片后即返回，不阻塞等待长任务；后续用 `get_run` / `get_events`（带 `after_sequence` 续读）/ `get_node_result` 查看状态与节点结构化输入/输出/错误。
+- 高风险运行会返回 `approvalRequired=true` 并保持 `waiting_human`：提示用户在卡片中批准或拒绝；批准只执行已持久化的精确运行请求，禁止重新生成 scope 或 inputs。
+- 失败修复闭环必须按顺序：`get_run`/`get_events` 锁定 `node.failed` 的稳定 nodeId 与 `error.code` → `get_node`/`get_node_schema` 定位原因 → `manage_lcagent_workflow(action="validate")` 生成 ChangeSet → 用户确认 → `get_change_set` 核验 `status=applied` 与新 revision → `start` 新运行（`parent_run_id` 指向失败运行，`base_revision` 使用新 revision）。
+- ChangeSet 未确认、被拒绝、或返回 `REVISION_CONFLICT` 时，禁止声称“已修复”或直接重跑旧 revision。
+- `stop`/`resume` 只调用权威 API；`resumable=false` 的运行停止后不可继续，应创建新运行。
+

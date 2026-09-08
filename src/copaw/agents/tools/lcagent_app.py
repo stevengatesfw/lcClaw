@@ -24,6 +24,20 @@ def _lcagent_tool_text(text: str) -> ToolResponse:
     )
 
 
+def _bound_workspace(meta: dict[str, Any], expected_type: str) -> tuple[dict[str, Any] | None, str]:
+    raw = meta.get("lcagent_workspace")
+    if not isinstance(raw, dict):
+        return None, ""
+    workspace_type = str(raw.get("type") or "").strip()
+    workspace_id = str(raw.get("id") or "").strip()
+    if workspace_type != expected_type or not workspace_id:
+        return None, (
+            f"WORKSPACE_TYPE_MISMATCH: 当前助手绑定到 {workspace_type or 'unknown'} "
+            f"workspace，不能使用 {expected_type} 编辑工具。"
+        )
+    return {**raw, "type": workspace_type, "id": workspace_id}, ""
+
+
 def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,too-many-branches
     query: str,
     app_id: str = "",
@@ -137,8 +151,9 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
 
 
 def manage_lcagent_workflow(
-    action: Literal["catalog", "validate", "get_change_set"],
+    action: Literal["catalog", "context", "get_node", "get_node_schema", "validate", "get_change_set"],
     app_id: str = "",
+    node_id: str = "",
     patch_json: str = "",
     change_set_id: str = "",
     create_app_name: str = "",
@@ -161,8 +176,9 @@ def manage_lcagent_workflow(
     ``get_change_set`` 核验 ``status=applied`` 和 ``target.appId``，否则应用仍未创建。
 
     Args:
-        action: ``catalog`` 获取组件/资源目录；``validate`` 预校验 Patch；
-            ``get_change_set`` 查询变更集状态。
+        action: ``catalog`` 获取组件/资源目录；``context`` 读取绑定画布快照；
+            ``get_node`` / ``get_node_schema`` 按稳定节点 ID 读取；``validate``
+            预校验 Patch；``get_change_set`` 查询变更集状态。
         app_id: 修改已有应用时的应用 UUID；留空表示创建新应用。
         patch_json: ``validate`` 所需的 JSON，格式为
             ``{"summary":"...","operations":[...]}``。
@@ -180,6 +196,12 @@ def manage_lcagent_workflow(
             ``initialInput``/``customMapping`` 使用 ``bind_variable_reference``；
             提示词内引用使用 ``insert_prompt_reference``（会同步占位符、结构化
             ``payload__prompt_refs``/媒体 refs 与引用边）。目录的
+            明确模型使用 ``set_model.selection_id`` 选择 catalog 条目，由服务端
+            解析当前 nodeConfig；提示词正文用 ``set_prompt``，模型高级参数用
+            ``set_advanced_parameters``。文本/图片/视频/音频/资源内容使用
+            ``set_content_block`` / ``remove_content_block``，slot 与字段约束以
+            patchSchema 为准。一个 operations 数组作为原子候选批处理校验。
+            目录的
             ``resources.bindingSchemas``/``resources.resourceSchemas`` 说明 MCP、数据库、知识库、Skill 和已发布
             工作流的资源列表、能力字段与绑定方式；MCP 条目中的 ``tools[].inputSchema``
             仅用于读取工具参数，不要把敏感连接配置写入 Patch。
@@ -198,16 +220,40 @@ def manage_lcagent_workflow(
         return _lcagent_tool_text("错误：缺少 lcagent_console_api_base。")
     if not auth:
         return _lcagent_tool_text("错误：缺少 Authorization，无法访问工作流。")
+    bound, binding_error = _bound_workspace(meta, "workflow")
+    if binding_error:
+        return _lcagent_tool_text(f"错误：{binding_error}")
+    if bound:
+        bound_id = str(bound["id"])
+        if app_id.strip() and app_id.strip() != bound_id:
+            return _lcagent_tool_text(
+                "错误：WORKSPACE_BINDING_MISMATCH: 当前助手不能访问其它工作流。"
+            )
+        app_id = bound_id
 
     method = "GET"
     payload = None
     if action == "catalog":
         path = "/console/api/workflow-editing/catalog"
+    elif action in {"context", "get_node", "get_node_schema"}:
+        if not app_id.strip():
+            return _lcagent_tool_text(f"错误：{action} 需要 app_id 或编辑器 workspace binding。")
+        path = f"/console/api/workspace-context/workflow/{app_id.strip()}"
+        if action != "context":
+            if not node_id.strip():
+                return _lcagent_tool_text(f"错误：{action} 需要 node_id。")
+            path += f"/nodes/{node_id.strip()}"
+            if action == "get_node_schema":
+                path += "/schema"
     elif action == "get_change_set":
         if not change_set_id.strip():
             return _lcagent_tool_text("错误：get_change_set 需要 change_set_id。")
         path = f"/console/api/workflow-editing/change-sets/{change_set_id.strip()}"
     elif action == "validate":
+        if bound and not (base_revision.strip() or str(bound.get("revision") or "").strip()):
+            return _lcagent_tool_text(
+                "错误：REVISION_REQUIRED: 绑定画布缺少权威 revision，请重新读取 context。"
+            )
         try:
             patch = json.loads(patch_json)
         except json.JSONDecodeError as exc:
@@ -236,7 +282,12 @@ def manage_lcagent_workflow(
         payload = {
             "target": target,
             "patch": patch,
-            **({"baseRevision": base_revision.strip()} if base_revision.strip() else {}),
+            **({"workspace": {"type": "workflow", "id": app_id.strip()}} if bound else {}),
+            **(
+                {"baseRevision": base_revision.strip() or str(bound.get("revision") or "")}
+                if base_revision.strip() or bound
+                else {}
+            ),
         }
     else:
         return _lcagent_tool_text(f"错误：不支持的 action: {action}")
@@ -291,8 +342,9 @@ def manage_lcagent_workflow(
 
 
 def manage_lcagent_agent(
-    action: Literal["catalog", "get_agent", "propose", "get_change_set"],
+    action: Literal["catalog", "context", "get_node", "get_node_schema", "get_agent", "propose", "get_change_set"],
     app_id: str = "",
+    node_id: str = "",
     patch_json: str = "",
     change_set_id: str = "",
     create_app_name: str = "",
@@ -339,11 +391,31 @@ def manage_lcagent_agent(
         return _lcagent_tool_text("错误：缺少 lcagent_console_api_base。")
     if not auth:
         return _lcagent_tool_text("错误：缺少 Authorization，无法访问 Agent。")
+    bound, binding_error = _bound_workspace(meta, "agent")
+    if binding_error:
+        return _lcagent_tool_text(f"错误：{binding_error}")
+    if bound:
+        bound_id = str(bound["id"])
+        if app_id.strip() and app_id.strip() != bound_id:
+            return _lcagent_tool_text(
+                "错误：WORKSPACE_BINDING_MISMATCH: 当前助手不能访问其它 Agent。"
+            )
+        app_id = bound_id
 
     method = "GET"
     payload = None
     if action == "catalog":
         path = "/console/api/agent-editing/catalog"
+    elif action in {"context", "get_node", "get_node_schema"}:
+        if not app_id.strip():
+            return _lcagent_tool_text(f"错误：{action} 需要 app_id 或编辑器 workspace binding。")
+        path = f"/console/api/workspace-context/agent/{app_id.strip()}"
+        if action != "context":
+            if not node_id.strip():
+                return _lcagent_tool_text(f"错误：{action} 需要 node_id。")
+            path += f"/nodes/{node_id.strip()}"
+            if action == "get_node_schema":
+                path += "/schema"
     elif action == "get_agent":
         if not app_id.strip():
             return _lcagent_tool_text("错误：get_agent 需要 app_id。")
@@ -353,6 +425,10 @@ def manage_lcagent_agent(
             return _lcagent_tool_text("错误：get_change_set 需要 change_set_id。")
         path = f"/console/api/agent-editing/change-sets/{change_set_id.strip()}"
     elif action == "propose":
+        if bound and not (base_revision.strip() or str(bound.get("revision") or "").strip()):
+            return _lcagent_tool_text(
+                "错误：REVISION_REQUIRED: 绑定 Agent 缺少权威 revision，请重新读取 context。"
+            )
         try:
             patch = json.loads(patch_json)
         except json.JSONDecodeError as exc:
@@ -375,7 +451,12 @@ def manage_lcagent_agent(
         payload = {
             "target": target,
             "patch": patch,
-            **({"baseRevision": base_revision.strip()} if base_revision.strip() else {}),
+            **({"workspace": {"type": "agent", "id": app_id.strip()}} if bound else {}),
+            **(
+                {"baseRevision": base_revision.strip() or str(bound.get("revision") or "")}
+                if base_revision.strip() or bound
+                else {}
+            ),
         }
     else:
         return _lcagent_tool_text(f"错误：不支持的 action: {action}")
@@ -414,4 +495,173 @@ def manage_lcagent_agent(
             "nextAction": "请用户在当前聊天的 ChangeSet 卡片检查改动并点击确认应用",
             **body,
         }
+    return _lcagent_tool_text(json.dumps(body, ensure_ascii=False))
+
+
+def run_lcagent_workflow(  # pylint: disable=too-many-return-statements,too-many-branches
+    action: Literal["start", "get_run", "get_events", "get_node_result", "stop", "resume"],
+    app_id: str = "",
+    scope: str = "",
+    node_id: str = "",
+    base_revision: str = "",
+    inputs_json: str = "",
+    boundary_inputs_json: str = "",
+    run_id: str = "",
+    after_sequence: int = 0,
+    parent_run_id: str = "",
+) -> ToolResponse:
+    """创建/查询/停止/恢复统一工作流调试运行（node、downstream、workflow scope）。
+
+    这是唯一的调试运行入口：``start`` 不阻塞，服务端返回 ``lcagent_workflow_run``
+    结构化结果（runId/status/scope/baseRevision/approvalRequired/resumable），前端会
+    渲染 WorkflowRunCard。运行失败后的修复必须走 ``manage_lcagent_workflow`` 的
+    ChangeSet 确认流程，然后用新的 ``baseRevision`` 和 ``parent_run_id`` 创建子运行；
+    不得声称未确认的修改已修复。``approvalRequired=true`` 的运行由用户在卡片确认，
+    不要在对话里声称已执行。
+
+    Args:
+        action: ``start`` 创建运行；``get_run`` 查询运行权威状态；``get_events``
+            按 ``after_sequence`` 增量拉取事件；``get_node_result`` 读取某节点
+            结构化输入/输出/错误；``stop`` 请求停止；``resume`` 仅对
+            ``resumable=true`` 的运行有效。
+        app_id: 目标工作流应用 UUID；留空使用编辑器 workspace binding。
+        scope: ``start`` 必填：``node``（单节点）/``downstream``（该节点及下游）/
+            ``workflow``（全图）。``node``/``downstream`` 必须带 ``node_id``。
+        node_id: 目标节点稳定 ID（来自 context/事件中的 nodeId，不要用显示名）。
+        base_revision: ``start`` 必填的草稿图哈希（来自 context 的 revision）。
+        inputs_json: 节点/全图输入，JSON 对象字符串。
+        boundary_inputs_json: ``downstream`` 边界输入，键为 ``"nodeId:inputName"``。
+        run_id: 已有运行 UUID（除 ``start`` 外必填）。
+        after_sequence: ``get_events`` 的续读游标（上次最大 sequence）。
+        parent_run_id: repair 重跑时指向失败运行的 UUID。
+
+    Returns:
+        服务端结构化 JSON；错误时为含 ``ok=false`` 与稳定 ``code`` 的 JSON。
+    """
+    meta = get_process_request_meta()
+    base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
+    auth = get_request_authorization().strip()
+    if not base:
+        return _lcagent_tool_text("错误：缺少 lcagent_console_api_base。")
+    if not auth:
+        return _lcagent_tool_text("错误：缺少 Authorization，无法访问工作流。")
+    bound, binding_error = _bound_workspace(meta, "workflow")
+    if binding_error:
+        return _lcagent_tool_text(f"错误：{binding_error}")
+    if bound:
+        bound_id = str(bound["id"])
+        if app_id.strip() and app_id.strip() != bound_id:
+            return _lcagent_tool_text(
+                "错误：WORKSPACE_BINDING_MISMATCH: 当前助手不能运行其它工作流。"
+            )
+        app_id = bound_id
+
+    method = "GET"
+    payload = None
+    if action == "start":
+        if not app_id.strip():
+            return _lcagent_tool_text("错误：start 需要 app_id 或编辑器 workspace binding。")
+        if not scope.strip():
+            return _lcagent_tool_text("错误：start 需要 scope（node|downstream|workflow）。")
+        revision = base_revision.strip() or (str(bound.get("revision") or "").strip() if bound else "")
+        if not revision:
+            return _lcagent_tool_text(
+                "错误：REVISION_REQUIRED: start 需要 base_revision，请先读取 context。"
+            )
+        inputs: dict[str, Any] = {}
+        if inputs_json.strip():
+            try:
+                parsed_inputs = json.loads(inputs_json)
+            except json.JSONDecodeError as exc:
+                return _lcagent_tool_text(f"错误：inputs_json 不是合法 JSON: {exc}")
+            if not isinstance(parsed_inputs, dict):
+                return _lcagent_tool_text("错误：inputs_json 顶层必须是对象。")
+            inputs = parsed_inputs
+        boundary_inputs: dict[str, Any] = {}
+        if boundary_inputs_json.strip():
+            try:
+                parsed_boundary = json.loads(boundary_inputs_json)
+            except json.JSONDecodeError as exc:
+                return _lcagent_tool_text(f"错误：boundary_inputs_json 不是合法 JSON: {exc}")
+            if not isinstance(parsed_boundary, dict):
+                return _lcagent_tool_text("错误：boundary_inputs_json 顶层必须是对象。")
+            boundary_inputs = parsed_boundary
+        idempotency_key = "run:{app}:{scope}:{node}:{rev}:{parent}".format(
+            app=app_id.strip(),
+            scope=scope.strip(),
+            node=node_id.strip() or "-",
+            rev=revision[:24],
+            parent=parent_run_id.strip() or "-",
+        )
+        method = "POST"
+        path = "/console/api/workflow-runs"
+        payload = {
+            "workspace": {"type": "workflow", "id": app_id.strip()},
+            "baseRevision": revision,
+            "scope": scope.strip(),
+            "inputs": inputs,
+            "boundaryInputs": boundary_inputs,
+            "debug": True,
+            "idempotencyKey": idempotency_key,
+            **({"nodeId": node_id.strip()} if node_id.strip() else {}),
+            **({"parentRunId": parent_run_id.strip()} if parent_run_id.strip() else {}),
+        }
+    elif action == "get_run":
+        if not run_id.strip():
+            return _lcagent_tool_text("错误：get_run 需要 run_id。")
+        path = f"/console/api/workflow-runs/{run_id.strip()}"
+    elif action == "get_events":
+        if not run_id.strip():
+            return _lcagent_tool_text("错误：get_events 需要 run_id。")
+        cursor = max(0, int(after_sequence or 0))
+        path = f"/console/api/workflow-runs/{run_id.strip()}/events?afterSequence={cursor}&limit=200"
+    elif action == "get_node_result":
+        if not run_id.strip():
+            return _lcagent_tool_text("错误：get_node_result 需要 run_id。")
+        if not node_id.strip():
+            return _lcagent_tool_text("错误：get_node_result 需要 node_id。")
+        path = f"/console/api/workflow-runs/{run_id.strip()}/nodes/{node_id.strip()}"
+    elif action == "stop":
+        if not run_id.strip():
+            return _lcagent_tool_text("错误：stop 需要 run_id。")
+        method = "POST"
+        path = f"/console/api/workflow-runs/{run_id.strip()}/stop"
+        payload = {"reason": "assistant_requested"}
+    elif action == "resume":
+        if not run_id.strip():
+            return _lcagent_tool_text("错误：resume 需要 run_id。")
+        method = "POST"
+        path = f"/console/api/workflow-runs/{run_id.strip()}/resume"
+        payload = {}
+    else:
+        return _lcagent_tool_text(f"错误：不支持的 action: {action}")
+
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+            response = client.request(
+                method,
+                f"{base}{path}",
+                json=payload,
+                headers={
+                    "Authorization": auth,
+                    "Content-Type": "application/json",
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.warning("run_lcagent_workflow: request error %s", exc)
+        return _lcagent_tool_text(f"访问 LCAgent 运行接口失败: {exc}")
+
+    try:
+        body: Any = response.json()
+    except json.JSONDecodeError:
+        body = {"message": (response.text or "")[:1000]}
+    if response.status_code >= 400:
+        return _lcagent_tool_text(
+            json.dumps(
+                {"ok": False, "httpStatus": response.status_code, "error": body},
+                ensure_ascii=False,
+            ),
+        )
+    if action == "start" and isinstance(body, dict):
+        body = {"kind": "lcagent_workflow_run", "requiresUserConfirmation": False, **body}
     return _lcagent_tool_text(json.dumps(body, ensure_ascii=False))
