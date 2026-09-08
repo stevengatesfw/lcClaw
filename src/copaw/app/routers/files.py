@@ -277,8 +277,8 @@ def _ensure_workspace_preview_auth(request: Request, storage_user_key: str) -> N
 
 @router.api_route(
     "/preview/{resource_path:path}",
-    methods=["GET", "HEAD"],
-    summary="Preview workspace file under users/.../workspaces/<ws>/...",
+    methods=["GET", "HEAD", "DELETE"],
+    summary="Preview or delete workspace file under users/.../workspaces/<ws>/...",
 )
 async def preview_workspace_file(
     request: Request,
@@ -294,6 +294,7 @@ async def preview_workspace_file(
     directly under ``users/<tenant>/``). Legacy absolute paths are still tried
     when nothing exists under ``USERS_DIR``.
     """
+    target: Path
     if _WORKSPACES not in resource_path:
         target = _resolve_path_under_users_dir(resource_path)
         if not target.is_file():
@@ -309,42 +310,49 @@ async def preview_workspace_file(
             base = Path(USERS_DIR).resolve()
             parent_rel = str(target.parent.relative_to(base)).replace("\\", "/")
             _ensure_workspace_preview_auth(request, parent_rel)
-        media, _ = mimetypes.guess_type(str(target))
-        return FileResponse(
-            path=str(target),
-            media_type=media or "application/octet-stream",
-            filename=target.name,
-            content_disposition_type="inline",
-        )
-    head, tail = resource_path.split(_WORKSPACES, 1)
-    head = head.strip().strip("/")
-    tail = tail.strip().strip("/")
-    if not head or not tail:
-        raise HTTPException(status_code=404, detail="Not found")
-    workspace_parts = tail.split("/", 1)
-    workspace = workspace_parts[0]
-    rel_path = workspace_parts[1] if len(workspace_parts) > 1 else ""
-
-    _ensure_workspace_preview_auth(request, head.replace("\\", "/"))
-
-    base = Path(USERS_DIR).resolve()
-    user_root = base
-    for seg in head.replace("\\", "/").split("/"):
-        if not seg or seg in (".", ".."):
+    else:
+        head, tail = resource_path.split(_WORKSPACES, 1)
+        head = head.strip().strip("/")
+        tail = tail.strip().strip("/")
+        if not head or not tail:
             raise HTTPException(status_code=404, detail="Not found")
-        user_root = user_root / seg
-    root = (user_root / "workspaces" / workspace).resolve()
-    try:
-        root.relative_to(base)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Not found") from None
-    target = (root / rel_path).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Not found") from None
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail="Not found")
+        workspace_parts = tail.split("/", 1)
+        workspace = workspace_parts[0]
+        rel_path = workspace_parts[1] if len(workspace_parts) > 1 else ""
+
+        _ensure_workspace_preview_auth(request, head.replace("\\", "/"))
+
+        base = Path(USERS_DIR).resolve()
+        user_root = base
+        for seg in head.replace("\\", "/").split("/"):
+            if not seg or seg in (".", ".."):
+                raise HTTPException(status_code=404, detail="Not found")
+            user_root = user_root / seg
+        root = (user_root / "workspaces" / workspace).resolve()
+        try:
+            root.relative_to(base)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not found") from None
+        target = (root / rel_path).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not found") from None
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+
+    if request.method == "DELETE":
+        base = Path(USERS_DIR).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Forbidden") from None
+        try:
+            target.unlink()
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Delete failed: {e}") from e
+        return {"ok": True, "deleted": target.name}
+
     media, _ = mimetypes.guess_type(str(target))
     return FileResponse(
         path=str(target),
