@@ -924,7 +924,7 @@ export function LocalModelManageModal({
                 <div className={styles.customModelInputRow}>
                   <Input
                     value={customModelRepoId}
-                    onChange={(e) => setCustomModelRepoId(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCustomModelRepoId(e.target.value)}
                     onPressEnter={() => {
                       void handleStartCustomModelDownload();
                     }}

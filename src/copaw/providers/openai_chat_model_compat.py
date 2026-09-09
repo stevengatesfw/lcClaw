@@ -13,7 +13,9 @@ from agentscope.model._model_response import ChatResponse
 from pydantic import BaseModel
 
 from copaw.local_models.tag_parser import (
+    extract_thinking_from_text,
     parse_tool_calls_from_text,
+    text_contains_think_tag,
     strip_gemma_channel_markup,
     text_contains_tool_call_tag,
 )
@@ -238,6 +240,41 @@ class OpenAIChatModelCompat(OpenAIChatModel):
                 _think_tool_calls.clear()
                 _text_tool_calls.clear()
             else:
+                # --- 0. Promote <think> tags inside text blocks ---
+                # Some OpenAI-compatible endpoints stream reasoning inline
+                # as <think>...</think> in the text instead of the dedicated
+                # reasoning_content field.  Convert it into a structured
+                # "thinking" block so downstream consumers never have to
+                # split it heuristically.  parsed.content is a cumulative
+                # snapshot, so re-extracting on every yield is safe (the
+                # unclosed-tag case is covered by extract_thinking_from_text).
+                promoted_blocks: list = []
+                promoted_any = False
+                for block in parsed.content:
+                    if block.get("type") == "text":
+                        text = block.get("text") or ""
+                        if text_contains_think_tag(text):
+                            extracted = extract_thinking_from_text(text)
+                            if extracted.thinking:
+                                promoted_any = True
+                                promoted_blocks.append(
+                                    {
+                                        "type": "thinking",
+                                        "thinking": extracted.thinking,
+                                    },
+                                )
+                                if extracted.remaining_text:
+                                    promoted_blocks.append(
+                                        {
+                                            "type": "text",
+                                            "text": extracted.remaining_text,
+                                        },
+                                    )
+                                continue
+                    promoted_blocks.append(block)
+                if promoted_any:
+                    parsed.content = promoted_blocks
+
                 # --- 1. Scan thinking blocks ---
                 for block in parsed.content:
                     if block.get("type") != "thinking":

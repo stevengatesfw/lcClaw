@@ -90,7 +90,7 @@ function ModelsPage() {
                     <Input
                       placeholder={t("models.searchPlaceholder")}
                       value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
                       onPressEnter={() => {}}
                       className={styles.searchInput}
                       prefix={<SearchOutlined />}

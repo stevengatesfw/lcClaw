@@ -68,7 +68,7 @@ export function useConflictRenameModal(): {
           </div>
           <Input
             value={item.new_name}
-            onChange={(e) => {
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
               const next = [...items];
               next[i] = { ...next[i], new_name: e.target.value };
               setItems(next);

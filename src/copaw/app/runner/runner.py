@@ -30,6 +30,7 @@ from .command_dispatch import (
 )
 from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
 from .lcagent_published_apps_fetch import fetch_visible_published_apps_async
+from .lcagent_token_report import report_tokens_after_run
 from .query_error_dump import write_query_error_dump
 from .session import SafeJSONSession
 from .utils import build_env_context
@@ -59,6 +60,7 @@ from ...context import (
     set_process_request_meta,
 )
 from ...providers.models import ResolvedModelConfig
+from ...token_usage import get_token_usage_manager
 from ...security.tool_guard.approval import ApprovalDecision
 from ...security.tool_guard.models import TOOL_GUARD_DENIED_MARK
 from ..mcp import MCPClientManager
@@ -86,6 +88,52 @@ def _is_approval(text: str) -> bool:
     """
     normalized = " ".join(text.split()).lower()
     return normalized in _APPROVE_EXACT
+
+
+def _usage_field(record: Any, name: str, default: Any = 0) -> Any:
+    """兼容 pydantic 模型和普通 dict 的 token usage 记录。"""
+    if isinstance(record, dict):
+        return record.get(name, default)
+    return getattr(record, name, default)
+
+
+def _delta_billing_model_name(
+    before: Any | None,
+    after: Any | None,
+) -> Optional[str]:
+    """从 token 用量快照中提取本轮实际发生消耗的模型名。
+
+    首页助手的一次请求可能调用多个模型；只有一个模型发生增量时记真实
+    模型名，多个模型时与画布账单保持一致记「多模型」。
+    """
+    if before is None or after is None:
+        return None
+    before_models = getattr(before, "by_model", None)
+    after_models = getattr(after, "by_model", None)
+    if not isinstance(before_models, dict) or not isinstance(after_models, dict):
+        return None
+    changed: list[str] = []
+    for key, record in after_models.items():
+        previous = before_models.get(key)
+        pt = max(
+            int(_usage_field(record, "prompt_tokens") or 0)
+            - int(_usage_field(previous, "prompt_tokens") or 0),
+            0,
+        )
+        ct = max(
+            int(_usage_field(record, "completion_tokens") or 0)
+            - int(_usage_field(previous, "completion_tokens") or 0),
+            0,
+        )
+        if pt > 0 or ct > 0:
+            model = _usage_field(record, "model", None) or key
+            changed.append(str(model).strip() or str(key))
+    changed = list(dict.fromkeys(changed))
+    if len(changed) == 1:
+        return changed[0]
+    if len(changed) > 1:
+        return "多模型"
+    return None
 
 
 def _llm_cfg_from_process_meta() -> Optional[ResolvedModelConfig]:
@@ -616,11 +664,24 @@ class AgentRunner(Runner):
         mgr = None
         session_state_loaded = False
         _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
+        _token_snapshot_before = None
+        _billing_model_name: Optional[str] = None
+        try:
+            _token_snapshot_before = await get_token_usage_manager(
+                logical_user_id if logical_user_id else None,
+            ).get_summary()
+        except Exception:
+            logger.warning("Token snapshot before run failed", exc_info=True)
         try:
             self._request_llm_cfg_override = _llm_cfg_from_process_meta()
             if self._request_llm_cfg_override is None:
                 self._request_llm_cfg_override = (
                     await fetch_lcagent_home_llm_resolved_config()
+                )
+            if self._request_llm_cfg_override is not None:
+                _billing_model_name = (
+                    self._request_llm_cfg_override.model
+                    or None
                 )
             # Mirror HTTP /process behavior: when LCAgent injects meta, tools and
             # prompt helpers see ``lcagent_resolved_llm``. Channels and other
@@ -868,12 +929,14 @@ class AgentRunner(Runner):
 
             if enable_agent and proc_meta.get("lcagent_console_api_base"):
                 env_context += (
-                    "\n- 已发布应用返回的路径与链接：\n"
-                    "  /app/upload/、/tmp/、/console/api/files/download?… 等"
-                    "在 **LCAgent 后端**，**不在** lcClaw 工作目录。"
-                    "勿用 read_file 等本地验证；有链接则原样给用户。\n"
-                    "  send_file_to_user 可传入上述绝对路径或完整 http(s) 下载链接；"
-                    "平台会将会话中注入的控制台地址拼成可预览的下载 URL。\n"
+                    "\n- 已发布应用（invoke_lcagent_published_app）返回的路径与链接：\n"
+                    "  /app/upload/、/tmp/、/console/api/files/download?… 等在 **LCAgent 后端**，"
+                    "**不在** lcClaw 工作目录。勿用 read_file 等本地工具读取。\n"
+                    "  **规则**：invoke 的 reply 若已含图片 Markdown 或上述路径，"
+                    "**原样写入面向用户的最终正文**，**禁止**再调用 send_file_to_user。\n"
+                    "  send_file_to_user 仅用于 **本机工作区** write_file 等生成的文件"
+                    "（/copaw/api/files/preview/… 或本地路径）；"
+                    "不要用它重复发送 invoke 已返回的 LCAgent 文件。\n"
                 )
                 if proc_meta.get("lcagent_user_attachment_paths"):
                     env_context += (
@@ -890,6 +953,23 @@ class AgentRunner(Runner):
                             "勿扫工作区）："
                             f"{names_line}\n"
                         )
+
+            # Knowledge base context (injected regardless of enable_agent flag)
+            _kb_names = proc_meta.get("lcagent_knowledge_base_names")
+            if isinstance(_kb_names, list) and _kb_names:
+                _kb_ids = proc_meta.get("lcagent_knowledge_base_ids") or []
+                env_context += (
+                    "\n- 可用知识库（通过 search_knowledge_base 工具检索）:\n"
+                )
+                for _i, _name in enumerate(_kb_names):
+                    _kid = _kb_ids[_i] if _i < len(_kb_ids) else "?"
+                    env_context += f"  - {_name} (ID: {_kid})\n"
+                env_context += (
+                    "  仅当用户问题与这些知识库内容相关时调用 search_knowledge_base。"
+                    "回答时请引用来源文件。search_knowledge_base 返回的 kb_id 和 file_id "
+                    "可直接用于后续工具：用 open_kb_document 按行读取更多上下文，"
+                    "用 find_kb_document 在文件内定位关键词或正则表达式。\n"
+                )
 
             mcp_clients = await self._get_mcp_clients_for_user(storage_user_id)
 
@@ -1053,6 +1133,9 @@ class AgentRunner(Runner):
                     ) + converted.args[1:]
             raise converted from e
         finally:
+            # 请求级模型名已固化到 _billing_model_name；这里先清理请求级
+            # 配置。若先清理再读取，下面的 token 上报只能拿到 None，
+            # 首页对话积分明细的模型列会一直是「-」。
             self._request_llm_cfg_override = None
             if _meta_snapshot_for_restore is not None:
                 set_process_request_meta(_meta_snapshot_for_restore)
@@ -1074,6 +1157,54 @@ class AgentRunner(Runner):
 
             if mgr is not None and chat is not None:
                 await mgr.update_chat(chat)
+
+            if _token_snapshot_before is not None:
+                try:
+                    _token_mgr = get_token_usage_manager(
+                        logical_user_id if logical_user_id else None,
+                    )
+                    _after = await _token_mgr.get_summary()
+                    _pt_delta = max(
+                        _after.total_prompt_tokens
+                        - _token_snapshot_before.total_prompt_tokens,
+                        0,
+                    )
+                    _ct_delta = max(
+                        _after.total_completion_tokens
+                        - _token_snapshot_before.total_completion_tokens,
+                        0,
+                    )
+                    if _pt_delta > 0 or _ct_delta > 0:
+                        _meta = get_process_request_meta()
+                        _console_base = str(
+                            _meta.get("lcagent_console_api_base") or "",
+                        ).strip()
+                        _tid = (
+                            str(_meta.get("lcagent_tenant_id") or "")
+                            .strip()
+                            or None
+                        )
+                        # 优先使用 token usage 快照中的真实增量模型；快照不可用
+                        # 时再回退到请求解析出的首页模型配置。
+                        _model = _delta_billing_model_name(
+                            _token_snapshot_before,
+                            _after,
+                        ) or _billing_model_name
+                        asyncio.create_task(
+                            report_tokens_after_run(
+                                console_api_base=_console_base,
+                                user_id=logical_user_id,
+                                prompt_tokens=_pt_delta,
+                                completion_tokens=_ct_delta,
+                                session_id=session_id or None,
+                                tenant_id=_tid,
+                                model_name=_model,
+                            ),
+                        )
+                except Exception:
+                    logger.warning(
+                        "Token report snapshot failed", exc_info=True,
+                    )
 
     async def _cleanup_denied_session_memory(
         self,

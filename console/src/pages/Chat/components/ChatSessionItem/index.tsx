@@ -88,10 +88,10 @@ const ChatSessionItem: React.FC<ChatSessionItemProps> = (props) => {
             autoFocus
             size="small"
             value={props.editValue}
-            onChange={(e) => props.onEditChange?.(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => props.onEditChange?.(e.target.value)}
             onPressEnter={props.onEditSubmit}
             onBlur={props.onEditSubmit}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(e: React.MouseEvent) => e.stopPropagation()}
           />
         ) : (
           <div className={styles.titleRow}>

@@ -127,6 +127,38 @@ export function buildModelError(): Response {
 // URL normalization utilities
 // ---------------------------------------------------------------------------
 
+/**
+ * Absolute URL whose path is under the LCAgent upload area
+ * (``/static/upload/...`` or ``/app/upload/...``) → same-origin relative
+ * ``/static/upload/...``; returns null for anything else.
+ *
+ * Idempotent: also accepts an already-relative ``/static/upload/...`` (returned
+ * as-is) and ``/app/upload/...``. ``toDisplayUrl`` runs twice on the same value
+ * (once when synthesizing image blocks, once via ``replaceMediaURL``), so a
+ * non-idempotent rewrite would send the 2nd pass down the copaw preview path
+ * and 404.
+ */
+function lcagentUploadUrlToStaticRelative(raw: string): string | null {
+  const t = raw.trim();
+  // Already-relative upload paths: normalize to /static/upload/ and stop.
+  if (t.startsWith("/static/upload/")) return t;
+  if (t.startsWith("/app/upload/"))
+    return `/static/upload/${t.slice("/app/upload/".length)}`;
+  if (!t.startsWith("http://") && !t.startsWith("https://")) return null;
+  try {
+    const u = new URL(t);
+    const path = u.pathname || "";
+    const staticIdx = path.indexOf("/static/upload/");
+    if (staticIdx !== -1) return path.slice(staticIdx);
+    const uploadIdx = path.indexOf("/app/upload/");
+    if (uploadIdx !== -1)
+      return `/static/upload/${path.slice(uploadIdx + "/app/upload/".length)}`;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /** 与 LCAgent 首页 Markdown 一致：嵌入小控制台时把绝对下载链收成相对路径，沿用当前页协议。 */
 function absolutizeConsoleDownloadToRelativeWhenEmbedded(raw: string): string {
   if (typeof window === "undefined") return raw;
@@ -282,6 +314,12 @@ export function normalizeContentUrls(part: any): any {
 export function toDisplayUrl(url: string | undefined): string {
   if (!url) return "";
   if (url.startsWith("http://") || url.startsWith("https://")) {
+    // send_file may embed a host unreachable from this browser (e.g.
+    // http://127.0.0.1:30382/static/upload/...). Upload-area URLs are served
+    // by the same nginx as this page, so rewrite to a same-origin relative
+    // path; other hosts (external links) stay untouched.
+    const staticRel = lcagentUploadUrlToStaticRelative(url);
+    if (staticRel) return staticRel;
     const relOrRaw = absolutizeConsoleDownloadToRelativeWhenEmbedded(url);
     if (isCopawPreviewRef(relOrRaw)) {
       return copawPreviewDisplayUrl(relOrRaw);
@@ -295,6 +333,10 @@ export function toDisplayUrl(url: string | undefined): string {
     return relOrRaw;
   }
   if (url.startsWith("file://")) url = url.replace("file://", "");
+  // Already-relative upload path (2nd pass of a value we rewrote): keep as-is,
+  // do NOT route through copaw preview (which would 404 on /static/upload/...).
+  const uploadRel = lcagentUploadUrlToStaticRelative(url);
+  if (uploadRel) return uploadRel;
   const normalized = url.startsWith("/") ? url : `/${url}`;
   if (isCopawPreviewRef(normalized)) {
     return copawPreviewDisplayUrl(normalized);

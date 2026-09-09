@@ -487,13 +487,21 @@ _CONSOLE_STATIC_ENV = "COPAW_CONSOLE_STATIC_DIR"
 def _resolve_console_static_dir() -> str:  # pylint: disable=too-many-return-statements
     env_dir = os.environ.get(_CONSOLE_STATIC_ENV)
     if env_dir:
-        candidate = Path(env_dir)
-        if (candidate / "index.html").exists():
-            return env_dir
-        logger.warning(
-            "COPAW_CONSOLE_STATIC_DIR=%s 无 index.html，回退到默认控制台",
-            env_dir,
-        )
+        # 显式部署意图优先：无条件采用该目录，index.html 是否存在改为“请求时”
+        # 动态判断（见 read_root / _serve_console_index）。
+        #
+        # 根治时序坑：本函数在模块导入（进程启动）时执行一次并固化到
+        # _CONSOLE_STATIC_DIR。若容器启动早于 hostPath 挂载/前端构建产物就位，
+        # 旧逻辑会因“当下缺 index.html”回退到镜像内置的旧副本，且此后必须重启
+        # 才能纠正。改为无条件采用 env 目录后，产物一旦就位下次请求即 serve，
+        # 无需重启。
+        if not (Path(env_dir) / "index.html").exists():
+            logger.warning(
+                "COPAW_CONSOLE_STATIC_DIR=%s 当前无 index.html，仍采用该目录"
+                "（将在请求时动态读取，产物就位后无需重启即可生效）",
+                env_dir,
+            )
+        return env_dir
     pkg_dir = Path(__file__).resolve().parent.parent
     candidate = pkg_dir / "console"
     if candidate.is_dir() and (candidate / "index.html").exists():
@@ -578,66 +586,76 @@ register_custom_channel_routes(app)
 
 # Console static files and SPA fallback
 # Register these AFTER API routes to ensure proper routing priority
-if os.path.isdir(_CONSOLE_STATIC_DIR):
-    _console_path = Path(_CONSOLE_STATIC_DIR)
+#
+# 无条件注册（不再用 os.path.isdir 守卫）：目录是否存在、index/资源是否
+# 就位均由各 handler 在“请求时”用 .exists() 判断。否则若容器启动早于
+# hostPath 挂载就位，路由将永不注册，必须重启才能恢复。
+_console_path = Path(_CONSOLE_STATIC_DIR)
 
-    def _serve_console_index():
-        if _CONSOLE_INDEX and _CONSOLE_INDEX.exists():
-            return FileResponse(_CONSOLE_INDEX)
+def _serve_console_index():
+    if _CONSOLE_INDEX and _CONSOLE_INDEX.exists():
+        return FileResponse(_CONSOLE_INDEX)
 
+    raise HTTPException(status_code=404, detail="Not Found")
+
+@app.get("/logo.png")
+def _console_logo():
+    f = _console_path / "logo.png"
+    if f.is_file():
+        return FileResponse(f, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.get("/dark-logo.png")
+def _console_dark_logo():
+    f = _console_path / "dark-logo.png"
+    if f.is_file():
+        return FileResponse(f, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.get("/copaw-symbol.svg")
+def _console_icon():
+    f = _console_path / "copaw-symbol.svg"
+    if f.is_file():
+        return FileResponse(f, media_type="image/svg+xml")
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.get("/copaw-dark.png")
+def _console_dark_icon():
+    f = _console_path / "copaw-dark.png"
+    if f.is_file():
+        return FileResponse(f, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+_assets_dir = _console_path / "assets"
+# check_dir=False：容忍启动时 assets 目录尚未挂载/构建就位，请求时再读，
+# 避免因启动时序导致静态资源永久 404（须重启才能恢复）。
+app.mount(
+    "/assets",
+    StaticFiles(directory=str(_assets_dir), check_dir=False),
+    name="assets",
+)
+
+
+@app.get("/console")
+@app.get("/console/")
+@app.get("/console/{full_path:path}")
+def _console_spa_alias(full_path: str = ""):
+    _ = full_path
+    return _serve_console_index()
+
+
+# SPA fallback: catch-all route for frontend routing
+# Must be registered AFTER all API routes to avoid conflicts
+@app.get("/{full_path:path}")
+def _console_spa(full_path: str):
+    # Prevent catching common system/special paths
+    if full_path in ("docs", "redoc", "openapi.json"):
         raise HTTPException(status_code=404, detail="Not Found")
-
-    @app.get("/logo.png")
-    def _console_logo():
-        f = _console_path / "logo.png"
-        if f.is_file():
-            return FileResponse(f, media_type="image/png")
+    # Skip API routes (should already be matched due to registration order)
+    if full_path.startswith("api/") or full_path == "api":
         raise HTTPException(status_code=404, detail="Not Found")
-
-    @app.get("/dark-logo.png")
-    def _console_dark_logo():
-        f = _console_path / "dark-logo.png"
-        if f.is_file():
-            return FileResponse(f, media_type="image/png")
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    @app.get("/copaw-symbol.svg")
-    def _console_icon():
-        f = _console_path / "copaw-symbol.svg"
-        if f.is_file():
-            return FileResponse(f, media_type="image/svg+xml")
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    @app.get("/copaw-dark.png")
-    def _console_dark_icon():
-        f = _console_path / "copaw-dark.png"
-        if f.is_file():
-            return FileResponse(f, media_type="image/png")
-        raise HTTPException(status_code=404, detail="Not Found")
-
-    _assets_dir = _console_path / "assets"
-    if _assets_dir.is_dir():
-        app.mount(
-            "/assets",
-            StaticFiles(directory=str(_assets_dir)),
-            name="assets",
-        )
-
-    @app.get("/console")
-    @app.get("/console/")
-    @app.get("/console/{full_path:path}")
-    def _console_spa_alias(full_path: str = ""):
-        _ = full_path
-        return _serve_console_index()
-
-    # SPA fallback: catch-all route for frontend routing
-    # Must be registered AFTER all API routes to avoid conflicts
-    @app.get("/{full_path:path}")
-    def _console_spa(full_path: str):
-        # Prevent catching common system/special paths
-        if full_path in ("docs", "redoc", "openapi.json"):
-            raise HTTPException(status_code=404, detail="Not Found")
-        # Skip API routes (should already be matched due to registration order)
-        if full_path.startswith("api/") or full_path == "api":
-            raise HTTPException(status_code=404, detail="Not Found")
-        return _serve_console_index()
+    return _serve_console_index()

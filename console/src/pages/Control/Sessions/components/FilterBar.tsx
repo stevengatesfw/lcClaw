@@ -24,7 +24,7 @@ export function FilterBar({
       <Input
         placeholder={t("sessions.filterUserId")}
         value={filterUserId}
-        onChange={(e) => onUserIdChange(e.target.value)}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => onUserIdChange(e.target.value)}
         allowClear
         className="sessions-filter-input"
         style={{ width: 200, marginRight: 8 }}

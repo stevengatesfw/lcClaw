@@ -240,7 +240,7 @@ const ChatSearchPanel: React.FC<ChatSearchPanelProps> = ({ open, onClose }) => {
           placeholder={t("chat.search.placeholder")}
           prefix={<SparkSearchLine style={{ color: "rgba(0,0,0,0.25)" }} />}
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchQuery(e.target.value)}
           allowClear
           className={styles.searchInput}
         />

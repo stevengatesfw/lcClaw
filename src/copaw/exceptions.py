@@ -198,12 +198,24 @@ def convert_model_exception(  # pylint: disable=too-many-return-statements
     if status_code is not None:
         details["status_code"] = status_code
 
+    # 云厂商常用 403 + NOT_ENOUGH_BALANCE，不能先按 403 打成未授权。
+    if any(
+        kw in error_message
+        for kw in [
+            "not enough balance",
+            "insufficient balance",
+            "insufficient_quota",
+            "rate limit",
+            "quota",
+            "too many requests",
+            "余额不足",
+        ]
+    ) or status_code == 429:
+        return ModelQuotaExceededException(model, details=details)
+
     # Level 1: Status code mapping (most reliable)
     if status_code in (401, 403):
         return UnauthorizedModelAccessException(model, details=details)
-
-    if status_code == 429:
-        return ModelQuotaExceededException(model, details=details)
 
     # Level 2: Keyword mapping
     if any(
@@ -217,16 +229,6 @@ def convert_model_exception(  # pylint: disable=too-many-return-statements
         ]
     ):
         return UnauthorizedModelAccessException(model, details=details)
-
-    if any(
-        kw in error_message
-        for kw in [
-            "rate limit",
-            "quota",
-            "too many requests",
-        ]
-    ):
-        return ModelQuotaExceededException(model, details=details)
 
     if any(
         kw in error_message
