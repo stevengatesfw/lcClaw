@@ -365,10 +365,13 @@ class ToolResultCompactConfig(BaseModel):
     )
 
     old_max_bytes: int = Field(
-        default=3000,
+        default=32768,
         ge=100,
         description=(
-            "Byte threshold for old messages in tool result compaction"
+            "Byte threshold for old messages in tool result compaction. "
+            "Must stay above structured tool payloads (e.g. LCAgent catalog "
+            "index ≈24KB) so they are not silently cut mid-JSON; total "
+            "context is still bounded by memory compaction."
         ),
     )
 
