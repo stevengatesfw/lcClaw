@@ -38,6 +38,7 @@ class TaskTracker:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
         self._runs: dict[str, _RunState] = {}
+        self._aliases: dict[str, str] = {}
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -133,7 +134,8 @@ class TaskTracker:
     async def request_stop(self, run_key: str) -> bool:
         """Cancel the run. Returns ``True`` if it was running."""
         async with self._lock:
-            state = self._runs.get(run_key)
+            resolved_key = self._aliases.get(run_key, run_key)
+            state = self._runs.get(resolved_key)
             if state is None or state.task.done():
                 return False
             state.task.cancel()
@@ -144,6 +146,7 @@ class TaskTracker:
         run_key: str,
         payload: Any,
         stream_fn: Callable[..., Coroutine],
+        aliases: tuple[str, ...] = (),
     ) -> tuple[asyncio.Queue, bool]:
         """Attach to an existing run or start a new one.
 
@@ -152,6 +155,8 @@ class TaskTracker:
         async with self._lock:
             state = self._runs.get(run_key)
             if state is not None and not state.task.done():
+                for alias in aliases:
+                    self._aliases[alias] = run_key
                 q: asyncio.Queue = asyncio.Queue()
                 for sse in state.buffer:
                     q.put_nowait(sse)
@@ -165,6 +170,8 @@ class TaskTracker:
                 buffer=[],
             )
             self._runs[run_key] = run
+            for alias in aliases:
+                self._aliases[alias] = run_key
 
             tracker_ref = weakref.ref(self)
 
@@ -203,6 +210,13 @@ class TaskTracker:
                                 run_key,
                                 None,
                             )
+                            stale_aliases = [
+                                alias
+                                for alias, target in tracker._aliases.items()
+                                if target == run_key
+                            ]
+                            for alias in stale_aliases:
+                                tracker._aliases.pop(alias, None)
 
             run.task = asyncio.create_task(_producer())
             return my_queue, True

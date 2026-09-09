@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Callable, Optional
 
 from uuid import uuid4
@@ -21,6 +22,7 @@ from .utils import agentscope_msg_to_message
 
 
 router = APIRouter(prefix="/chats", tags=["chats"])
+logger = logging.getLogger(__name__)
 
 _ISOLATION_ENABLED = bool(os.environ.get("LAZY_PLATFORM_KEY", "").strip())
 
@@ -121,6 +123,28 @@ async def batch_delete_chats(
     """Delete chats by chat IDs."""
     deleted = await mgr.delete_chats(chat_ids=chat_ids)
     return {"deleted": deleted}
+
+
+@router.post("/stop-by-session", response_model=dict)
+async def stop_chat_by_session(
+    session_id: str = Query(..., description="Session id to stop"),
+    channel: str = Query("console", description="Chat channel"),
+    workspace=Depends(get_workspace),
+):
+    """Cancel the TaskTracker run associated with a session.
+
+    LCAgent knows the stable session id before CoPaw returns a chat id. This
+    endpoint resolves the persisted chat and cancels the actual asyncio task.
+    """
+    stopped = await workspace.task_tracker.request_stop(session_id)
+    logger.info(
+        "stop-by-session: session=%s channel=%s stopped=%s active=%s",
+        session_id,
+        channel,
+        stopped,
+        await workspace.task_tracker.list_active_tasks(),
+    )
+    return {"stopped": stopped}
 
 
 @router.get("/{chat_id}", response_model=ChatHistory)
