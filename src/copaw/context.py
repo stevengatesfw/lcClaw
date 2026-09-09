@@ -29,6 +29,14 @@ _current_working_dir: ContextVar[Optional[Path]] = ContextVar(
     default=None,
 )
 
+# Current request's session_id (agentscope session; set by runner for
+# cache diagnostics — TokenRecordingModelWrapper reads it to compare
+# consecutive requests of the same conversation).
+_current_session_id: ContextVar[Optional[str]] = ContextVar(
+    "current_session_id",
+    default=None,
+)
+
 # POST /api/agent/process JSON ``meta`` (set by auth middleware for runner).
 _process_request_meta: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "process_request_meta",
@@ -65,6 +73,21 @@ def reset_current_user_id() -> None:
 def get_context_user_id() -> Optional[str]:
     """user_id for this request (context; set by auth middleware)."""
     return _current_user_id.get()
+
+
+def set_current_session_id(session_id: Optional[str]) -> None:
+    """Set the session_id for the current request context (diagnostics)."""
+    _current_session_id.set(session_id)
+
+
+def reset_current_session_id() -> None:
+    """Reset the session_id context (call at end of request)."""
+    _current_session_id.set(None)
+
+
+def get_context_session_id() -> Optional[str]:
+    """session_id for this request (context; set by runner.query_handler)."""
+    return _current_session_id.get()
 
 
 def set_process_request_meta(meta: Optional[Dict[str, Any]]) -> None:

@@ -68,6 +68,7 @@ from .tools.lcagent_app import (
     invoke_lcagent_published_app,
     manage_lcagent_agent,
     manage_lcagent_workflow,
+    run_lcagent_workflow,
 )
 from .tools.open_kb_document import open_kb_document
 from .tools.search_knowledge_base import search_knowledge_base
@@ -299,6 +300,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             "invoke_lcagent_published_app": invoke_lcagent_published_app,
             "manage_lcagent_workflow": manage_lcagent_workflow,
             "manage_lcagent_agent": manage_lcagent_agent,
+            "run_lcagent_workflow": run_lcagent_workflow,
         }
 
         multimodal = get_active_model_supports_multimodal()
@@ -315,6 +317,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
                     "invoke_lcagent_published_app",
                     "manage_lcagent_workflow",
                     "manage_lcagent_agent",
+                    "run_lcagent_workflow",
                 )
                 and not enable_agent_mode
             ):

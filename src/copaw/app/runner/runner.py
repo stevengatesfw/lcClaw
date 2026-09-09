@@ -1199,6 +1199,7 @@ class AgentRunner(Runner):
                             session_id=session_id or None,
                             tenant_id=_tid,
                             model_name=_model,
+                            prompt_cached_tokens=_cached_delta,
                         )
                         if _was_cancelled:
                             # A stopped HTTP stream no longer owns a reliable
