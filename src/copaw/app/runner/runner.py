@@ -18,7 +18,6 @@ from agentscope.pipeline import stream_printing_messages
 from agentscope_runtime.engine.runner import Runner
 from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
 from agentscope_runtime.engine.schemas.exception import (
-    AgentException,
     AppBaseException,
 )
 from dotenv import load_dotenv
@@ -663,6 +662,7 @@ class AgentRunner(Runner):
         chat = None
         mgr = None
         session_state_loaded = False
+        _was_cancelled = False
         _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
         _token_snapshot_before = None
         _billing_model_name: Optional[str] = None
@@ -1091,11 +1091,12 @@ class AgentRunner(Runner):
             ):
                 yield msg, last
 
-        except asyncio.CancelledError as exc:
+        except asyncio.CancelledError:
+            _was_cancelled = True
             logger.info(f"query_handler: {session_id} cancelled!")
             if agent is not None:
                 await agent.interrupt()
-            raise AgentException("Task has been cancelled!") from exc
+            raise
         except AppBaseException:
             raise
         except Exception as e:
@@ -1190,17 +1191,23 @@ class AgentRunner(Runner):
                             _token_snapshot_before,
                             _after,
                         ) or _billing_model_name
-                        asyncio.create_task(
-                            report_tokens_after_run(
-                                console_api_base=_console_base,
-                                user_id=logical_user_id,
-                                prompt_tokens=_pt_delta,
-                                completion_tokens=_ct_delta,
-                                session_id=session_id or None,
-                                tenant_id=_tid,
-                                model_name=_model,
-                            ),
+                        _token_report = report_tokens_after_run(
+                            console_api_base=_console_base,
+                            user_id=logical_user_id,
+                            prompt_tokens=_pt_delta,
+                            completion_tokens=_ct_delta,
+                            session_id=session_id or None,
+                            tenant_id=_tid,
+                            model_name=_model,
                         )
+                        if _was_cancelled:
+                            # A stopped HTTP stream no longer owns a reliable
+                            # fire-and-forget lifetime.  Finish the callback as
+                            # part of cancellation cleanup so partial usage is
+                            # visible as soon as the run stops.
+                            await _token_report
+                        else:
+                            asyncio.create_task(_token_report)
                 except Exception:
                     logger.warning(
                         "Token report snapshot failed", exc_info=True,

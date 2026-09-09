@@ -21,7 +21,7 @@ from ..config.utils import (
     copaw_storage_isolation_enabled,
     get_config_path,
 )
-from ..context import get_effective_config_path
+from ..context import get_context_user_id, get_effective_config_path
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV, CORS_ORIGINS, WORKING_DIR
 from ..__version__ import __version__
 from ..utils.logging import setup_logger, add_copaw_file_handler
@@ -62,6 +62,20 @@ mimetypes.add_type("application/wasm", ".wasm")
 # With storage isolation (LAZY_PLATFORM_KEY), envs are per-user via API.
 if not copaw_storage_isolation_enabled():
     load_envs_into_environ()
+
+
+class AuthenticatedAgentApp(AgentApp):
+    """Use the JWT identity for AgentScope interrupt task ownership."""
+
+    async def _stream_generator_with_interrupt(self, request: dict, **kwargs):
+        authenticated_user_id = get_context_user_id()
+        if authenticated_user_id:
+            request = {**request, "user_id": authenticated_user_id}
+        async for chunk in super()._stream_generator_with_interrupt(
+            request,
+            **kwargs,
+        ):
+            yield chunk
 
 
 # Dynamic runner that selects the correct workspace runner based on request
@@ -161,7 +175,7 @@ class DynamicMultiAgentRunner:
 # Use dynamic runner for AgentApp
 runner = DynamicMultiAgentRunner()
 
-agent_app = AgentApp(
+agent_app = AuthenticatedAgentApp(
     app_name="Friday",
     app_description="A helpful assistant with background task support",
     runner=runner,
@@ -459,6 +473,7 @@ app = FastAPI(
     redoc_url="/redoc" if DOCS_ENABLED else None,
     openapi_url="/openapi.json" if DOCS_ENABLED else None,
 )
+app.state.agent_runtime_app = agent_app
 
 # Outermost first: auth → agent routing → LCAgent JWT →
 # /api/agent/process body inject
