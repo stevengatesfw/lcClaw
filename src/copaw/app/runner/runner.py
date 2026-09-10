@@ -18,7 +18,6 @@ from agentscope.pipeline import stream_printing_messages
 from agentscope_runtime.engine.runner import Runner
 from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
 from agentscope_runtime.engine.schemas.exception import (
-    AgentException,
     AppBaseException,
 )
 from dotenv import load_dotenv
@@ -55,9 +54,7 @@ from ...context import (
     get_context_user_id,
     get_process_request_meta,
     get_request_authorization,
-    reset_current_session_id,
     reset_current_working_dir,
-    set_current_session_id,
     set_current_working_dir,
     set_process_request_meta,
 )
@@ -69,11 +66,8 @@ from ..mcp import MCPClientManager
 
 if TYPE_CHECKING:
     from ...agents.memory import BaseMemoryManager
-    from ...config.config import AgentProfileConfig
 
 logger = logging.getLogger(__name__)
-
-_LCAGENT_HOME_MAX_ITERS = 20
 
 _APPROVE_EXACT = frozenset(
     {
@@ -189,29 +183,6 @@ def _feature_flags_from_process_meta() -> tuple[bool, bool]:
         meta.get("lcagent_enable_skills"), default=True
     )
     return enable_agent, enable_skills
-
-
-def _limit_lcagent_home_max_iters(
-    agent_config: "AgentProfileConfig",
-    channel: str,
-) -> "AgentProfileConfig":
-    """Bound LCAgent homepage ReAct loops without mutating saved config."""
-    meta = get_process_request_meta()
-    if (
-        channel != DEFAULT_CHANNEL
-        or not str(meta.get("lcagent_console_api_base") or "").strip()
-        or agent_config.running.max_iters <= _LCAGENT_HOME_MAX_ITERS
-    ):
-        return agent_config
-
-    limited = agent_config.model_copy(deep=True)
-    limited.running.max_iters = _LCAGENT_HOME_MAX_ITERS
-    logger.info(
-        "Limit LCAgent homepage agent max_iters: configured=%s effective=%s",
-        agent_config.running.max_iters,
-        limited.running.max_iters,
-    )
-    return limited
 
 
 def _env_lcagent_console_api_base() -> str:
@@ -691,6 +662,7 @@ class AgentRunner(Runner):
         chat = None
         mgr = None
         session_state_loaded = False
+        _was_cancelled = False
         _meta_snapshot_for_restore: Optional[dict[str, Any]] = None
         _token_snapshot_before = None
         _billing_model_name: Optional[str] = None
@@ -840,9 +812,6 @@ class AgentRunner(Runner):
 
             user_working_dir = get_user_working_dir(storage_user_id)
             set_current_working_dir(user_working_dir)
-            # 缓存可观测性（CacheDiagnostics）：让模型包装层能按 session 对比
-            # 相邻请求的公共前缀；只读用途，不参与任何业务分支。
-            set_current_session_id(session_id)
             wd = (
                 str(user_working_dir)
                 if copaw_storage_isolation_enabled()
@@ -959,16 +928,6 @@ class AgentRunner(Runner):
                     )
 
             if enable_agent and proc_meta.get("lcagent_console_api_base"):
-                _workspace = proc_meta.get("lcagent_workspace")
-                if isinstance(_workspace, dict) and _workspace.get("id"):
-                    env_context += (
-                        "\n- 当前编辑器 workspace（服务端权威绑定）：\n"
-                        f"  - type: {_workspace.get('type')}\n"
-                        f"  - id: {_workspace.get('id')}\n"
-                        f"  - revision: {_workspace.get('revision') or ''}\n"
-                        "  必须先用对应 manage_lcagent_* 工具读取 context；"
-                        "不得读取或修改其它 app_id，Patch 必须携带当前 revision。\n"
-                    )
                 env_context += (
                     "\n- 已发布应用（invoke_lcagent_published_app）返回的路径与链接：\n"
                     "  /app/upload/、/tmp/、/console/api/files/download?… 等在 **LCAgent 后端**，"
@@ -1020,10 +979,6 @@ class AgentRunner(Runner):
             agent_config = load_agent_config(
                 self.agent_id,
                 config_path=_root_cp,
-            )
-            agent_config = _limit_lcagent_home_max_iters(
-                agent_config,
-                channel,
             )
             if (
                 self._request_llm_cfg_override is not None
@@ -1136,11 +1091,12 @@ class AgentRunner(Runner):
             ):
                 yield msg, last
 
-        except asyncio.CancelledError as exc:
+        except asyncio.CancelledError:
+            _was_cancelled = True
             logger.info(f"query_handler: {session_id} cancelled!")
             if agent is not None:
                 await agent.interrupt()
-            raise AgentException("Task has been cancelled!") from exc
+            raise
         except AppBaseException:
             raise
         except Exception as e:
@@ -1185,7 +1141,6 @@ class AgentRunner(Runner):
             if _meta_snapshot_for_restore is not None:
                 set_process_request_meta(_meta_snapshot_for_restore)
             reset_current_working_dir()
-            reset_current_session_id()
             if agent is not None and session_state_loaded:
                 await self.session.save_session_state(
                     session_id=session_id,
@@ -1220,11 +1175,6 @@ class AgentRunner(Runner):
                         - _token_snapshot_before.total_completion_tokens,
                         0,
                     )
-                    _cached_delta = max(
-                        _after.total_cached_tokens
-                        - _token_snapshot_before.total_cached_tokens,
-                        0,
-                    )
                     if _pt_delta > 0 or _ct_delta > 0:
                         _meta = get_process_request_meta()
                         _console_base = str(
@@ -1241,18 +1191,24 @@ class AgentRunner(Runner):
                             _token_snapshot_before,
                             _after,
                         ) or _billing_model_name
-                        asyncio.create_task(
-                            report_tokens_after_run(
-                                console_api_base=_console_base,
-                                user_id=logical_user_id,
-                                prompt_tokens=_pt_delta,
-                                completion_tokens=_ct_delta,
-                                session_id=session_id or None,
-                                tenant_id=_tid,
-                                model_name=_model,
-                                prompt_cached_tokens=_cached_delta,
-                            ),
+                        _token_report = report_tokens_after_run(
+                            console_api_base=_console_base,
+                            user_id=logical_user_id,
+                            prompt_tokens=_pt_delta,
+                            completion_tokens=_ct_delta,
+                            session_id=session_id or None,
+                            tenant_id=_tid,
+                            model_name=_model,
+                            prompt_cached_tokens=_cached_delta,
                         )
+                        if _was_cancelled:
+                            # A stopped HTTP stream no longer owns a reliable
+                            # fire-and-forget lifetime.  Finish the callback as
+                            # part of cancellation cleanup so partial usage is
+                            # visible as soon as the run stops.
+                            await _token_report
+                        else:
+                            asyncio.create_task(_token_report)
                 except Exception:
                     logger.warning(
                         "Token report snapshot failed", exc_info=True,

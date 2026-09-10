@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Agent file management API."""
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -16,10 +17,56 @@ from ...config.config import load_agent_config, save_agent_config
 from ...agents.memory.agent_md_manager import AgentMdManager
 from ...agents.utils import copy_builtin_qa_md_files, copy_md_files
 from ...constant import BUILTIN_QA_AGENT_ID
+from ..auth import get_current_user_id_required
 from ..agent_context import get_agent_for_request
 from ..storage_deps import get_storage_config_path
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+logger = logging.getLogger(__name__)
+
+
+@router.post(
+    "/stop",
+    response_model=dict,
+    summary="Stop the authenticated agent process session",
+)
+async def stop_agent_process(
+    request: Request,
+    body: dict = Body(..., description='Stop request, e.g. {"session_id": "..."}'),
+    user_id: str = Depends(get_current_user_id_required),
+) -> dict:
+    """Interrupt the `/api/agent/process` run for this JWT user and session."""
+    session_id = str(body.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id required")
+
+    runtime_app = getattr(request.app.state, "agent_runtime_app", None)
+    if runtime_app is None:
+        raise HTTPException(status_code=503, detail="Agent runtime unavailable")
+
+    await runtime_app.stop_chat(user_id, session_id)
+
+    # AgentScope's distributed STOP signal is delivered through pub/sub.  When
+    # the process request and stop request land on this same instance, cancel
+    # the local worker immediately as well.  This aborts the active provider or
+    # tool call instead of waiting for it to finish before the runner's billing
+    # cleanup can execute.  The pub/sub signal above remains the cross-instance
+    # fallback.
+    get_interrupt_key = getattr(runtime_app, "_get_interrupt_key", None)
+    local_tasks = getattr(runtime_app, "_local_tasks", None)
+    if callable(get_interrupt_key) and isinstance(local_tasks, dict):
+        task_id = get_interrupt_key(user_id, session_id)
+        local_task = local_tasks.get(task_id)
+        logger.info(
+            "agent/stop local lookup: task=%s found=%s active_task_count=%d",
+            task_id,
+            local_task is not None,
+            len(local_tasks),
+        )
+        if local_task is not None and not local_task.done():
+            local_task.cancel()
+
+    return {"stopped": True}
 
 
 class MdFileInfo(BaseModel):
