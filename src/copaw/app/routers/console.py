@@ -41,11 +41,13 @@ def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
         content_parts = (
             list(request_data.input[0].content) if request_data.input else []
         )
+        request_meta = getattr(request_data, "meta", None) or {}
     else:
         channel_id = request_data.get("channel", "console")
         sender_id = request_data.get("user_id", "default")
         session_id = request_data.get("session_id", "default")
         input_data = request_data.get("input", [])
+        request_meta = request_data.get("meta") or {}
         content_parts = []
         for content_part in input_data:
             if hasattr(content_part, "content"):
@@ -58,6 +60,7 @@ def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
         "sender_id": sender_id,
         "content_parts": content_parts,
         "meta": {
+            **(request_meta if isinstance(request_meta, dict) else {}),
             "session_id": session_id,
             "user_id": sender_id,
         },
