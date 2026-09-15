@@ -732,6 +732,11 @@ def create_model_and_formatter(
             api_key=llm_cfg.api_key or "",
             require_api_key=False,
             models=[],
+            generate_kwargs={
+                "extra_body": {
+                    "enable_thinking": bool(llm_cfg.enable_thinking),
+                },
+            },
         )
         model = ephemeral.get_chat_model_instance(llm_cfg.model)
         formatter = _create_formatter_instance(model.__class__)
