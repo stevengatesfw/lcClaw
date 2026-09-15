@@ -254,6 +254,10 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             Configured toolkit instance
         """
         toolkit = Toolkit()
+        _request_meta = get_process_request_meta()
+        _direct_knowledge_mode = bool(
+            _request_meta.get("lcagent_kb_direct_mode"),
+        )
 
         # Check which tools are enabled from agent config
         enabled_tools = {}
@@ -307,6 +311,12 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
 
         # Register only enabled tools
         for tool_name, tool_func in tool_functions.items():
+            if _direct_knowledge_mode:
+                logger.debug(
+                    "Skipped %s because direct knowledge-answer mode is active",
+                    tool_name,
+                )
+                continue
             # If tool not in config, enable by default (backward compatibility)
             if not enabled_tools.get(tool_name, True):
                 logger.debug("Skipped disabled tool: %s", tool_name)
@@ -353,7 +363,11 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         _kb_count = int(
             get_process_request_meta().get("lcagent_knowledge_base_count") or 0,
         )
-        if _kb_count > 0:
+        _knowledge_prefetched = isinstance(
+            get_process_request_meta().get("lcagent_prefetched_kb_context"),
+            dict,
+        )
+        if _kb_count > 0 and not _knowledge_prefetched:
             for _kb_tool in (
                 search_knowledge_base,
                 open_kb_document,
@@ -377,7 +391,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
 
         # Auto-register background task management tools if any *enabled*
         # tool has async_execution set
-        has_async_tools = any(
+        has_async_tools = not _direct_knowledge_mode and any(
             async_execution_tools.get(name, False)
             for name in tool_functions
             if enabled_tools.get(name, True)

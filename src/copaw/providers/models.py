@@ -20,6 +20,10 @@ class ResolvedModelConfig(BaseModel):
     base_url: str = Field(default="")
     api_key: str = Field(default="")
     is_local: bool = Field(default=False)
+    enable_thinking: bool = Field(
+        default=False,
+        description="Whether the upstream third-party model may emit reasoning.",
+    )
     chat_model_name: Optional[str] = Field(
         default=None,
         description=(
