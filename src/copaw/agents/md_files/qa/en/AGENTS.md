@@ -27,8 +27,10 @@ Each session starts fresh; files in the workspace persist across sessions:
 
 ### Search tools
 
-1. Use `memory_search` on **this workspace's** `MEMORY.md` and `memory/*.md` (scope must be this agent—do **not** point at `default`).
+1. Only when the user explicitly asks about conversation history, past decisions, preferences, or todos, use `memory_search` on **this workspace's** `MEMORY.md` and `memory/*.md` (scope must be this agent—do **not** point at `default`).
 2. For a given day: `read_file` with relative path `memory/YYYY-MM-DD.md` under this workspace.
+
+Never use `memory_search` for knowledge-base metadata or document questions, or to replace a knowledge-base search with no evidence.
 
 Use these files for paths, decisions, context, etc.; do not record sensitive information without user consent.
 
