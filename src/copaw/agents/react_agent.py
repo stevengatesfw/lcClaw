@@ -63,14 +63,12 @@ from .tools.lcagent_media import (
     invoke_lcagent_user_appendix_for_body,
     reset_invoke_lcagent_media_state,
 )
-from .tools.find_kb_document import find_kb_document
 from .tools.lcagent_app import (
     invoke_lcagent_published_app,
     manage_lcagent_agent,
     manage_lcagent_workflow,
     run_lcagent_workflow,
 )
-from .tools.open_kb_document import open_kb_document
 from .tools.search_knowledge_base import search_knowledge_base
 from .utils import process_file_and_media_blocks_in_message
 
@@ -150,7 +148,12 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         self._mcp_clients = mcp_clients or []
         self._namesake_strategy = namesake_strategy
         self._enable_agent_mode = bool(enable_agent_mode)
-        self._enable_skills = bool(enable_skills)
+        _request_tool_policy = get_process_request_meta().get("lcagent_tool_policy")
+        _skills_allowed = (
+            not isinstance(_request_tool_policy, dict)
+            or bool(_request_tool_policy.get("allow_skills"))
+        )
+        self._enable_skills = bool(enable_skills) and _skills_allowed
         self._workspace_dir = workspace_dir
         self._task_tracker = task_tracker
 
@@ -255,8 +258,15 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         """
         toolkit = Toolkit()
         _request_meta = get_process_request_meta()
+        _tool_policy = _request_meta.get("lcagent_tool_policy")
+        _tool_policy = _tool_policy if isinstance(_tool_policy, dict) else None
         _direct_knowledge_mode = bool(
             _request_meta.get("lcagent_kb_direct_mode"),
+        )
+        _allow_general_tools = (
+            bool(_tool_policy.get("allow_general_tools"))
+            if _tool_policy is not None
+            else True
         )
 
         # Check which tools are enabled from agent config
@@ -311,7 +321,7 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
 
         # Register only enabled tools
         for tool_name, tool_func in tool_functions.items():
-            if _direct_knowledge_mode:
+            if _direct_knowledge_mode or not _allow_general_tools:
                 logger.debug(
                     "Skipped %s because direct knowledge-answer mode is active",
                     tool_name,
@@ -363,16 +373,18 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         _kb_count = int(
             get_process_request_meta().get("lcagent_knowledge_base_count") or 0,
         )
-        _knowledge_prefetched = isinstance(
-            get_process_request_meta().get("lcagent_prefetched_kb_context"),
-            dict,
+        _allow_kb_fallback = (
+            bool(_tool_policy.get("allow_kb_fallback"))
+            if _tool_policy is not None
+            else not isinstance(
+                get_process_request_meta().get("lcagent_prefetched_kb_context"),
+                dict,
+            )
         )
-        if _kb_count > 0 and not _knowledge_prefetched:
-            for _kb_tool in (
-                search_knowledge_base,
-                open_kb_document,
-                find_kb_document,
-            ):
+        if _kb_count > 0 and _allow_kb_fallback:
+            # Normal retrieval is server-controlled. A technical failure may
+            # expose only one bounded search call, never open/find loops.
+            for _kb_tool in (search_knowledge_base,):
                 _kb_tool_name = _kb_tool.__name__
                 if not enabled_tools.get(_kb_tool_name, True):
                     continue
@@ -391,10 +403,14 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
 
         # Auto-register background task management tools if any *enabled*
         # tool has async_execution set
-        has_async_tools = not _direct_knowledge_mode and any(
-            async_execution_tools.get(name, False)
-            for name in tool_functions
-            if enabled_tools.get(name, True)
+        has_async_tools = (
+            not _direct_knowledge_mode
+            and _allow_general_tools
+            and any(
+                async_execution_tools.get(name, False)
+                for name in tool_functions
+                if enabled_tools.get(name, True)
+            )
         )
         if has_async_tools:
             try:
@@ -547,7 +563,17 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
         self.memory_manager = memory_manager
 
         # Register memory_search tool if enabled and available
-        if self._enable_memory_manager and self.memory_manager is not None:
+        _tool_policy = get_process_request_meta().get("lcagent_tool_policy")
+        _allow_memory_search = (
+            bool(_tool_policy.get("allow_memory_search"))
+            if isinstance(_tool_policy, dict)
+            else True
+        )
+        if (
+            self._enable_memory_manager
+            and self.memory_manager is not None
+            and _allow_memory_search
+        ):
             # update memory manager
             self.memory = self.memory_manager.get_in_memory_memory()
             self.memory_manager.chat_model = self.model
@@ -1173,6 +1199,12 @@ class CoPawAgent(ToolGuardMixin, ReActAgent):
             ms = running.memory_summary
             if (
                 ms.force_memory_search
+                and bool(
+                    (get_process_request_meta().get("lcagent_tool_policy") or {}).get(
+                        "allow_memory_search",
+                        True,
+                    ),
+                )
                 and self.memory_manager is not None
                 and query
             ):

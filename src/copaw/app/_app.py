@@ -21,7 +21,10 @@ from ..config.utils import (
     copaw_storage_isolation_enabled,
     get_config_path,
 )
-from ..context import get_context_user_id, get_effective_config_path
+from ..context import (
+    get_context_user_id,
+    get_effective_config_path,
+)
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV, CORS_ORIGINS, WORKING_DIR
 from ..__version__ import __version__
 from ..utils.logging import setup_logger, add_copaw_file_handler
@@ -45,6 +48,7 @@ from .migration import (
     ensure_qa_agent_exists,
 )
 from .channels.registry import register_custom_channel_routes
+from .rag_context_capture import same_run_rag_context_event
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -137,7 +141,15 @@ class DynamicMultiAgentRunner:
             logger.debug(f"Got runner: {runner}, type: {type(runner)}")
             # Delegate to the actual runner's stream_query generator
             count = 0
+            rag_context_emitted = False
             async for item in runner.stream_query(request, *args, **kwargs):
+                if not rag_context_emitted:
+                    rag_context_event = same_run_rag_context_event()
+                    if rag_context_event is not None:
+                        # This diagnostic event is outside Msg/history, so it
+                        # cannot affect the final answer or a later session.
+                        yield rag_context_event
+                        rag_context_emitted = True
                 count += 1
                 logger.debug(f"Yielding item #{count}: {type(item)}")
                 yield item

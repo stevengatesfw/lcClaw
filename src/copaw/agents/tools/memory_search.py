@@ -22,9 +22,11 @@ def create_memory_search_tool(memory_manager):
         """
         Search MEMORY.md and memory/*.md files semantically.
 
-        Use this tool before answering questions about prior work, decisions,
-        dates, people, preferences, or todos. Returns top relevant snippets
-        with file paths and line numbers.
+        Use this tool only when the user explicitly asks about historical
+        conversations, remembered preferences, past decisions, or todos.
+        Never use it to list selected knowledge bases, answer knowledge-base
+        document questions, or replace a knowledge-base search that returned
+        no evidence. Returns relevant snippets with file paths and line numbers.
 
         Args:
             query (`str`):

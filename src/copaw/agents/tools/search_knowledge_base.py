@@ -13,7 +13,11 @@ import httpx
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
-from ...context import get_process_request_meta, get_request_authorization
+from ...context import (
+    get_process_request_meta,
+    get_request_authorization,
+    set_process_request_meta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,17 @@ def search_knowledge_base(
         error text on failure (never raises).
     """
     meta = get_process_request_meta()
+    policy = meta.get("lcagent_tool_policy")
+    if isinstance(policy, dict):
+        if not policy.get("allow_kb_fallback"):
+            return _kb_tool_text("本轮策略不允许调用知识库搜索。")
+        max_calls = max(0, min(int(policy.get("kb_fallback_max_calls") or 0), 1))
+        used_calls = int(meta.get("lcagent_kb_fallback_used_calls") or 0)
+        if used_calls >= max_calls:
+            return _kb_tool_text("本轮知识库恢复检索次数已用完。")
+        set_process_request_meta(
+            {**meta, "lcagent_kb_fallback_used_calls": used_calls + 1},
+        )
     count = int(meta.get("lcagent_knowledge_base_count") or 0)
     if count <= 0:
         return _kb_tool_text("未选择任何知识库，无法搜索。")
@@ -67,7 +82,11 @@ def search_knowledge_base(
         return _kb_tool_text("错误：缺少 Authorization。")
 
     url = f"{base}/console/api/kb/search"
-    payload = {"kb_ids": search_ids, "query": query, "top_k": top_k}
+    payload = {
+        "kb_ids": search_ids,
+        "query": query,
+        "top_k": max(1, min(int(top_k), 8)),
+    }
 
     try:
         with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:

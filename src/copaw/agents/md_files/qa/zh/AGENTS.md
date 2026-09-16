@@ -27,8 +27,10 @@ read_when:
 
 ### 🔍 检索工具
 
-1. 对 **本工作区** 的 `MEMORY.md` 与 `memory/*.md` 使用 `memory_search`（范围应是当前 agent，勿指向 default）。
+1. 仅当用户明确询问历史对话、过往决策、偏好或待办时，对 **本工作区** 的 `MEMORY.md` 与 `memory/*.md` 使用 `memory_search`（范围应是当前 agent，勿指向 default）。
 2. 读某日笔记：对本工作区使用相对路径 `memory/YYYY-MM-DD.md` + `read_file`。
+
+不得用 `memory_search` 回答知识库清单、知识库文档内容，或替代无结果的知识库检索。
 
 用这些文件记录路径、决策、上下文等；除非用户同意，勿记录敏感信息。
 
