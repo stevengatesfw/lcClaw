@@ -7,18 +7,38 @@
 import json
 import logging
 from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
+from ...constant import TRUNCATION_NOTICE_MARKER
 from ...context import get_process_request_meta, get_request_authorization
 from .lcagent_media import register_invoke_lcagent_reply
 
 logger = logging.getLogger(__name__)
 
+# Structured console payloads (catalog index, change-set summaries) stay below
+# this budget; anything larger is cut here with an explicit marker instead of
+# being silently truncated mid-JSON by memory-level tool result compaction.
+_LCAGENT_TOOL_MAX_BYTES = 24 * 1024
+_LCAGENT_TOOL_TAIL_BYTES = 2 * 1024
+
 
 def _lcagent_tool_text(text: str) -> ToolResponse:
+    text = text or ""
+    encoded = text.encode("utf-8")
+    if len(encoded) > _LCAGENT_TOOL_MAX_BYTES:
+        head = encoded[:_LCAGENT_TOOL_MAX_BYTES].decode("utf-8", errors="ignore")
+        tail = encoded[-_LCAGENT_TOOL_TAIL_BYTES:].decode("utf-8", errors="ignore")
+        text = (
+            f"{head}\n\n{TRUNCATION_NOTICE_MARKER}\n"
+            f"工具返回共 {len(encoded)} 字节，已截断并保留头部与尾部。"
+            "请改用分层按需读取（catalog 索引 + get_component_schema / "
+            "get_model_detail / get_mcp_tools / get_node），不要重复拉取全量。\n\n"
+            f"{tail}"
+        )
     return ToolResponse(
         content=[TextBlock(type="text", text=text)],
     )
@@ -151,67 +171,77 @@ def invoke_lcagent_published_app(  # pylint: disable=too-many-return-statements,
 
 
 def manage_lcagent_workflow(
-    action: Literal["catalog", "context", "get_node", "get_node_schema", "validate", "get_change_set"],
+    action: Literal[
+        "catalog",
+        "get_component_schema",
+        "get_model_detail",
+        "get_mcp_tools",
+        "context",
+        "get_node",
+        "get_node_schema",
+        "validate",
+        "get_change_set",
+    ],
     app_id: str = "",
     node_id: str = "",
+    component_type: str = "",
+    resource_id: str = "",
     patch_json: str = "",
     change_set_id: str = "",
     create_app_name: str = "",
     create_app_description: str = "",
     base_revision: str = "",
 ) -> ToolResponse:
-    """读取工作流编辑目录或生成待用户确认的工作流变更集。
+    """分层读取工作流编辑目录，或生成待用户确认的工作流变更集。
 
-    此工具只能读取和预校验，不能确认、发布或删除应用。``validate`` 成功后，
-    当前聊天会直接渲染含 Diff 与确认/取消按钮的 ChangeSet 卡片；请引导用户在
-    对话内确认，不要让用户跳转首页寻找卡片，也不得声称修改已经生效。
-    创建前必须先调用 ``catalog``。目录是 V2 画布组件的唯一事实源：新画布已
-    自带 ``__start__``/``__end__``，禁止重复添加；按组件 ``modelKinds`` 选择模型，
-    并原样复制 ``resources.models[].nodeConfig``，不得根据模型名猜测 source/model_id。
-    ``patchSchema`` 定义可用 Patch 操作，``components[].configSchema`` 定义节点参数
-    类型、枚举、范围与默认值；模型条目的 ``capabilities`` 是该模型参数的更窄约束。
-    不得只看 ``editableFields`` 后猜测复杂参数。
-    独立 Agent 应用应使用 ``manage_lcagent_agent``；工作流里的 ``agent-v2`` /
-    ``database-agent-v2`` 是画布节点，仍使用本工具。用户确认后用
-    ``get_change_set`` 核验 ``status=applied`` 和 ``target.appId``，否则应用仍未创建。
+    此工具只能读取和预校验，不能确认、发布或删除应用。目录按需分层读取，
+    不要试图一次拿到全量：``catalog`` 只返回**索引**（componentIndex 组件清单、
+    operationIndex 操作字段清单、creationGuide 规则、瘦身 resources）；
+    ``get_component_schema`` 按 ``component_type`` 返回单组件完整 configSchema
+    与 defaults；``get_model_detail`` / ``get_mcp_tools`` 按 ``resource_id``
+    返回模型 nodeConfig+capabilities / MCP tools[].inputSchema。
+
+    ``add_node.node_type`` 只能取 componentIndex[].nodeType；创建前必须先调用
+    ``catalog``，add_node 或 update_node_config 前必须先 ``get_component_schema``
+    查看字段类型、枚举与默认值。禁止凭记忆猜测 node_type 或字段名，禁止用
+    shell/curl 绕过本工具探索目录 API。新画布已自带 ``__start__``/``__end__``，
+    禁止重复添加。明确模型优先用 ``set_model.selection_id``（取索引
+    resources.models[].id，服务端解析当前 nodeConfig）；仅当需要把 nodeConfig
+    内联进 add_node.config 时才调用 ``get_model_detail`` 并原样复制，不得根据
+    模型名猜测 source/model_id。
+
+    Patch 操作词汇与规则以 catalog 返回的 operationIndex/creationGuide 和
+    lcagent_workflow_builder skill 为准。``validate`` 成功后当前聊天会直接渲染
+    含 Diff 与确认/取消按钮的 ChangeSet 卡片；请引导用户在对话内确认，不要
+    让用户跳转首页寻找卡片，也不得声称修改已经生效。用户确认后用
+    ``get_change_set`` 核验 ``status=applied`` 和 ``target.appId``，否则应用
+    仍未创建。独立 Agent 应用应使用 ``manage_lcagent_agent``；工作流里的
+    ``agent-v2``/``database-agent-v2`` 是画布节点，仍使用本工具。
 
     Args:
-        action: ``catalog`` 获取组件/资源目录；``context`` 读取绑定画布快照；
-            ``get_node`` / ``get_node_schema`` 按稳定节点 ID 读取；``validate``
-            预校验 Patch；``get_change_set`` 查询变更集状态。
+        action: ``catalog`` 目录索引；``get_component_schema`` 单组件完整
+            Schema；``get_model_detail`` / ``get_mcp_tools`` 单个资源详情；
+            ``context`` 读取绑定画布快照；``get_node`` / ``get_node_schema``
+            按稳定节点 ID 读取；``validate`` 预校验 Patch；``get_change_set``
+            查询变更集状态摘要。
         app_id: 修改已有应用时的应用 UUID；留空表示创建新应用。
+        node_id: ``get_node`` / ``get_node_schema`` 所需的稳定节点 ID。
+        component_type: ``get_component_schema`` 所需组件类型
+            （componentIndex[].nodeType，如 ``llm-text-generation``）。
+        resource_id: ``get_model_detail``（resources.models[].id）或
+            ``get_mcp_tools``（resources.mcpServers[].id）所需资源 ID。
         patch_json: ``validate`` 所需的 JSON，格式为
-            ``{"summary":"...","operations":[...]}``。
-            除增删节点/连线/更新配置外，还支持资源绑定操作：
-            ``{"type":"bind_resource","node_id":"...","resource_type":
-            "skill|mcp|knowledge|database|tool|app","resource_id":"..."}``
-            与同形状的 ``unbind_resource``；绑定在用户确认变更集时与图写入
-            同一事务生效，validate 期会校验资源存在性。修复已有画布的重叠、
-            逆向布局或空边界参数可提交 ``{"type":"layout_graph"}``；平台还会
-            默认对 Agent 修改后的拓扑自动排版并推导空的开始/结束 Schema。
-            精确声明输入输出使用 ``set_workflow_io``；把某节点输出引用为另一节点
-            输入使用 ``bind_node_input``，由平台生成带字段 mapping 的边。普通
-            ``connect_nodes`` 仅用于无需字段 mapping 的控制流连接。分支/迭代条件
-            使用 ``bind_condition_reference``，迭代 ``source``/``keyReference``/
-            ``initialInput``/``customMapping`` 使用 ``bind_variable_reference``；
-            提示词内引用使用 ``insert_prompt_reference``（会同步占位符、结构化
-            ``payload__prompt_refs``/媒体 refs 与引用边）。目录的
-            明确模型使用 ``set_model.selection_id`` 选择 catalog 条目，由服务端
-            解析当前 nodeConfig；提示词正文用 ``set_prompt``，模型高级参数用
-            ``set_advanced_parameters``。文本/图片/视频/音频/资源内容使用
-            ``set_content_block`` / ``remove_content_block``，slot 与字段约束以
-            patchSchema 为准。一个 operations 数组作为原子候选批处理校验。
-            目录的
-            ``resources.bindingSchemas``/``resources.resourceSchemas`` 说明 MCP、数据库、知识库、Skill 和已发布
-            工作流的资源列表、能力字段与绑定方式；MCP 条目中的 ``tools[].inputSchema``
-            仅用于读取工具参数，不要把敏感连接配置写入 Patch。
+            ``{"summary":"...","operations":[...]}``；一个 operations 数组作为
+            原子候选批处理校验，操作字段结构以 operationIndex 与组件
+            configSchema 为准。
         change_set_id: ``get_change_set`` 所需的变更集 ID。
         create_app_name: 创建应用时的名称。
         create_app_description: 创建应用时的描述。
         base_revision: 修改已有草稿时可选的基础版本哈希。
 
     Returns:
-        包含结构化目录、诊断或 ``lcagent_change_set`` 的 JSON。变更集仍需用户确认。
+        结构化 JSON：目录索引、组件/资源详情、诊断或 ``lcagent_change_set``
+        摘要。变更集仍需用户确认；超长返回会被显式截断并提示按需读取。
     """
     meta = get_process_request_meta()
     base = (meta.get("lcagent_console_api_base") or "").strip().rstrip("/")
@@ -234,7 +264,37 @@ def manage_lcagent_workflow(
     method = "GET"
     payload = None
     if action == "catalog":
-        path = "/console/api/workflow-editing/catalog"
+        path = "/console/api/workflow-editing/catalog?view=index"
+    elif action == "get_component_schema":
+        if not component_type.strip():
+            return _lcagent_tool_text(
+                "错误：get_component_schema 需要 component_type"
+                "（catalog componentIndex[].nodeType）。"
+            )
+        path = (
+            "/console/api/workflow-editing/catalog?view=component&node_type="
+            + quote(component_type.strip())
+        )
+    elif action == "get_model_detail":
+        if not resource_id.strip():
+            return _lcagent_tool_text(
+                "错误：get_model_detail 需要 resource_id"
+                "（catalog resources.models[].id）。"
+            )
+        path = (
+            "/console/api/workflow-editing/catalog?view=model&id="
+            + quote(resource_id.strip())
+        )
+    elif action == "get_mcp_tools":
+        if not resource_id.strip():
+            return _lcagent_tool_text(
+                "错误：get_mcp_tools 需要 resource_id"
+                "（catalog resources.mcpServers[].id）。"
+            )
+        path = (
+            "/console/api/workflow-editing/catalog?view=mcp&id="
+            + quote(resource_id.strip())
+        )
     elif action in {"context", "get_node", "get_node_schema"}:
         if not app_id.strip():
             return _lcagent_tool_text(f"错误：{action} 需要 app_id 或编辑器 workspace binding。")
@@ -248,7 +308,10 @@ def manage_lcagent_workflow(
     elif action == "get_change_set":
         if not change_set_id.strip():
             return _lcagent_tool_text("错误：get_change_set 需要 change_set_id。")
-        path = f"/console/api/workflow-editing/change-sets/{change_set_id.strip()}"
+        path = (
+            "/console/api/workflow-editing/change-sets/"
+            f"{quote(change_set_id.strip())}?view=summary"
+        )
     elif action == "validate":
         if bound and not (base_revision.strip() or str(bound.get("revision") or "").strip()):
             return _lcagent_tool_text(
@@ -277,7 +340,7 @@ def manage_lcagent_workflow(
                 "name": create_app_name.strip(),
                 "description": create_app_description.strip(),
             }
-        path = "/console/api/workflow-editing/change-sets/validate"
+        path = "/console/api/workflow-editing/change-sets/validate?view=summary"
         method = "POST"
         payload = {
             "target": target,
