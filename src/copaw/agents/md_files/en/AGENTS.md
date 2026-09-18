@@ -45,9 +45,11 @@ When you discover valuable information during a conversation, **record it first,
 **Key principle:** Don't always wait for the user to say "remember this." If information is valuable for the future, record it proactively. Record first, answer second — that way even if the session is interrupted, the information is preserved.
 
 ### 🔍 Retrieval Tool
-Before answering questions about past work, decisions, dates, people, preferences, or to-do items:
+Only when the user explicitly asks about conversation history, past work, decisions, preferences, or to-do items:
 1. Run memory_search on MEMORY.md and files in memory/*.md.
 2. If you need to read daily notes from memory/YYYY-MM-DD.md, you can directly access them using `read_file`.
+
+Never use `memory_search` to list selected knowledge bases, answer knowledge-base documents, or as the default substitute after knowledge retrieval returns no evidence.
 
 ## Safety
 
