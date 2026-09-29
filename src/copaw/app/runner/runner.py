@@ -27,6 +27,10 @@ from .command_dispatch import (
     _is_command,
     run_command_path,
 )
+from .edit_resend import (
+    edit_resend_keep_user_turns,
+    truncate_memory_after_user_turns,
+)
 from .lcagent_home_llm_fetch import fetch_lcagent_home_llm_resolved_config
 from .lcagent_published_apps_fetch import fetch_visible_published_apps_async
 from .lcagent_token_report import report_tokens_after_run
@@ -1193,6 +1197,31 @@ class AgentRunner(Runner):
                     e,
                 )
             session_state_loaded = True
+
+            # 编辑重发：在同一 session 内截断被替换的那一轮及其之后的记忆。
+            # 截断只是上下文修正，失败不该让用户这条消息发不出去。
+            try:
+                keep_user_turns = edit_resend_keep_user_turns(
+                    get_process_request_meta(),
+                )
+                if keep_user_turns is not None:
+                    removed_count = await truncate_memory_after_user_turns(
+                        agent.memory,
+                        keep_user_turns,
+                    )
+                    logger.info(
+                        "Edit resend truncated %d messages in session %s; "
+                        "kept %d user turns",
+                        removed_count,
+                        session_id,
+                        keep_user_turns,
+                    )
+            except Exception:
+                logger.warning(
+                    "Edit resend truncation skipped for session %s",
+                    session_id,
+                    exc_info=True,
+                )
 
             # Rebuild system prompt so it always reflects the latest
             # AGENTS.md / SOUL.md / PROFILE.md, not the stale one saved

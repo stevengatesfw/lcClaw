@@ -74,6 +74,27 @@ class ChatHistory(BaseModel):
     )
 
 
+class ChatPruneRequest(BaseModel):
+    """Whole user turns to drop from a chat's persisted memory.
+
+    Used by the console "delete turn" action. Deleting a turn in place keeps
+    the chat's ``session_id``, so the history list does not grow a duplicate
+    conversation the way abandoning the session did.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str = Field(..., description="Session identifier")
+    channel: str = Field(default=DEFAULT_CHANNEL, description="Channel name")
+    user_turn_indices: list[int] = Field(
+        default_factory=list,
+        description=(
+            "0-based positions among the session's user messages; each one "
+            "takes the replies that follow it down to the next user message"
+        ),
+    )
+
+
 class ChatsFile(BaseModel):
     """Chat registry file for JSON repository.
 
