@@ -10,12 +10,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from agentscope.memory import InMemoryMemory
 
 from ...app.auth import get_current_user_id_required
+from .edit_resend import delete_user_turns, normalize_user_turn_indices
 from .session import SafeJSONSession
 from .manager import ChatManager
 from .models import (
     ChatSpec,
     ChatUpdate,
     ChatHistory,
+    ChatPruneRequest,
 )
 from .utils import agentscope_msg_to_message
 
@@ -121,6 +123,86 @@ async def batch_delete_chats(
     """Delete chats by chat IDs."""
     deleted = await mgr.delete_chats(chat_ids=chat_ids)
     return {"deleted": deleted}
+
+
+@router.post("/prune", response_model=dict)
+async def prune_chat_turns(
+    request: ChatPruneRequest,
+    mgr: ChatManager = Depends(get_chat_manager),
+    session: SafeJSONSession = Depends(get_session),
+):
+    """Drop whole user turns from a chat, keeping its session id.
+
+    Backs the console "delete turn" action. Rewriting the persisted memory in
+    place is what lets the chat stay one entry in the history list; abandoning
+    the session for a fresh id used to leave the deleted turn behind and add a
+    new conversation.
+    """
+    try:
+        turn_indices = normalize_user_turn_indices(request.user_turn_indices)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not turn_indices:
+        raise HTTPException(
+            status_code=400,
+            detail="user_turn_indices must not be empty",
+        )
+
+    chat_id = await mgr.get_chat_id_by_session(
+        request.session_id,
+        request.channel,
+    )
+    chat_spec = await mgr.get_chat(chat_id) if chat_id else None
+    if chat_spec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Chat not found for session: {request.session_id}",
+        )
+
+    state = await session.get_session_state_dict(
+        request.session_id,
+        chat_spec.user_id,
+    )
+    memory_state = state.get("agent", {}).get("memory", {})
+    if not memory_state:
+        # Nothing persisted to prune (new chat, or state dropped). The client
+        # already removed the turn locally, so this is a success, not an error.
+        return {"removed": 0}
+
+    memory = InMemoryMemory()
+    memory.load_state_dict(memory_state, strict=False)
+    removed = await delete_user_turns(memory, turn_indices)
+    if not removed:
+        return {"removed": 0}
+
+    pruned_state = memory.state_dict()
+    await session.update_session_state(
+        session_id=request.session_id,
+        key="agent.memory",
+        value=pruned_state,
+        user_id=chat_spec.user_id,
+    )
+
+    # The platform reads /files/chat/{session_id} from the TiDB copy, so it has
+    # to be refreshed too or the pruned turns keep resurfacing from there.
+    from .repo.db_repo import clear_messages_in_db, sync_messages_to_db
+    if any(
+        isinstance(entry, (list, tuple))
+        and entry
+        and getattr(entry[0], "role", None) != "system"
+        for entry in memory.content
+    ):
+        await sync_messages_to_db(
+            request.session_id,
+            chat_spec.user_id,
+            {"agent": {"memory": pruned_state}},
+        )
+    else:
+        # Pruned the chat empty: sync would no-op on an empty memory and leave
+        # the old rows behind, so clear them explicitly.
+        await clear_messages_in_db(request.session_id)
+
+    return {"removed": removed}
 
 
 @router.get("/{chat_id}", response_model=ChatHistory)

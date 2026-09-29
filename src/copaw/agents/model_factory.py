@@ -696,6 +696,45 @@ def _strip_top_level_message_name(
     return messages
 
 
+# Hard fallback when neither LCAgent nor the agent running-config supplies a
+# cap. Matches AgentsRunningConfig.max_output_tokens default; generous enough
+# for long-form output yet within the max-output of mainstream Qwen/OpenAI-
+# compatible models (8192), so it will not trip a 'max_tokens too large' 400.
+_FALLBACK_MAX_OUTPUT_TOKENS = 8192
+
+
+def _resolve_resolved_max_output_tokens(
+    agent_id: Optional[str],
+    llm_cfg: "ResolvedModelConfig",
+) -> int:
+    """Output token cap for an LCAgent-resolved (home / IM channel) model.
+
+    The home / IM path historically passed **no** ``max_tokens``, so
+    OpenAI-compatible providers applied their own small server-side default
+    (DashScope Qwen ≈2000). Long answers — e.g. "分析文件并写资料" — were then
+    silently truncated mid-sentence and the ReAct loop treated the partial text
+    as the final answer (no error, no notice). Prefer a per-model value from
+    LCAgent, then the agent running-config default, then a hard fallback.
+    """
+    override = getattr(llm_cfg, "max_output_tokens", None)
+    if isinstance(override, int) and override > 0:
+        return override
+    try:
+        from ..config.config import load_agent_config
+
+        if agent_id:
+            running = load_agent_config(agent_id).running
+            value = getattr(running, "max_output_tokens", 0)
+            if isinstance(value, int) and value > 0:
+                return value
+    except Exception:  # pylint: disable=broad-except
+        logger.debug(
+            "max_output_tokens: load_agent_config(%s) failed; using fallback",
+            agent_id,
+        )
+    return _FALLBACK_MAX_OUTPUT_TOKENS
+
+
 def create_model_and_formatter(
     agent_id: Optional[str] = None,
     llm_cfg: Optional[ResolvedModelConfig] = None,
@@ -725,6 +764,19 @@ def create_model_and_formatter(
         base = (llm_cfg.base_url or "").strip().rstrip("/")
         if not base:
             base = "http://127.0.0.1:1234/v1"
+        # 显式设置输出上限：此前首页 / IM 路径不传 max_tokens，会落到云厂商默认
+        # （DashScope Qwen 约 2000），导致"写资料"等长文输出被静默截断、半截就结束。
+        _generate_kwargs: dict = {
+            "extra_body": {
+                "enable_thinking": bool(llm_cfg.enable_thinking),
+            },
+        }
+        _max_output_tokens = _resolve_resolved_max_output_tokens(
+            agent_id,
+            llm_cfg,
+        )
+        if _max_output_tokens > 0:
+            _generate_kwargs["max_tokens"] = _max_output_tokens
         ephemeral = OpenAIProvider(
             id="lcagent-resolved",
             name="LCAgent Resolved",
@@ -732,11 +784,7 @@ def create_model_and_formatter(
             api_key=llm_cfg.api_key or "",
             require_api_key=False,
             models=[],
-            generate_kwargs={
-                "extra_body": {
-                    "enable_thinking": bool(llm_cfg.enable_thinking),
-                },
-            },
+            generate_kwargs=_generate_kwargs,
         )
         model = ephemeral.get_chat_model_instance(llm_cfg.model)
         formatter = _create_formatter_instance(model.__class__)

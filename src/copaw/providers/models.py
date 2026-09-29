@@ -30,3 +30,12 @@ class ResolvedModelConfig(BaseModel):
             "When set, use this chat model class name (e.g. OpenAIChatModel)."
         ),
     )
+    max_output_tokens: Optional[int] = Field(
+        default=None,
+        description=(
+            "Per-model maximum output (completion) tokens. When None, CoPaw "
+            "applies AgentsRunningConfig.max_output_tokens. Setting this "
+            "prevents long answers (e.g. generated documents) from being cut "
+            "off by the provider's small server-side default."
+        ),
+    )

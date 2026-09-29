@@ -110,6 +110,32 @@ class DbChatRepository(BaseChatRepository):
         return datetime.fromisoformat(str(val))
 
 
+async def clear_messages_in_db(session_id: str) -> None:
+    """Delete every persisted message row for a session.
+
+    ``sync_messages_to_db`` returns early when the memory holds nothing to
+    write, so pruning the last turn of a chat needs this to stop the TiDB copy
+    from serving turns the user already deleted.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        from sqlalchemy import text as sa_text
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                sa_text("DELETE FROM copaw_chat_messages WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
+        logger.debug("Cleared persisted messages for session %s", session_id)
+    except Exception:
+        logger.warning(
+            "clear_messages_in_db failed for session %s",
+            session_id,
+            exc_info=True,
+        )
+
+
 async def sync_messages_to_db(session_id: str, user_id: str, state_dicts: dict) -> None:
     """Sync messages from agent state dict to copaw_chat_messages table."""
     import logging

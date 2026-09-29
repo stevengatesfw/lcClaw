@@ -550,6 +550,21 @@ class AgentsRunningConfig(BaseModel):
         ),
     )
 
+    max_output_tokens: int = Field(
+        default=8192,
+        ge=1,
+        description=(
+            "Default maximum output (completion) tokens for a single model "
+            "call when the resolved model does not carry its own value. "
+            "Without an explicit cap, OpenAI-compatible providers fall back "
+            "to their server-side default (e.g. DashScope Qwen ≈2000), which "
+            "silently truncates long answers such as generated documents "
+            "mid-sentence with no error. Lower this if a model rejects the "
+            "request with a 'max_tokens too large' 400. Override per model "
+            "via ResolvedModelConfig.max_output_tokens."
+        ),
+    )
+
     history_max_length: int = Field(
         default=10000,
         ge=1000,
