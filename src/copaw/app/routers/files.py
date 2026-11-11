@@ -33,7 +33,11 @@ async def list_workspace_files(
 
     ws_dir = user_root / "workspaces" / "default"
 
-    skip_projects = {"browser", "dialog", "embedding_cache", "file_store", "media", "memory", "tool_result", ".trash"}
+    # skills/ 是 agent 的能力资产目录（每个技能含 SKILL.md、references、scripts 等），
+    # 递归列出来会被当成「用户生成的成品文件」，一个技能就能贡献上百个 .md。
+    # 成品只认 downloads/、output/ 这类显式产出目录与工作区根目录的散文件。
+    skip_projects = {"browser", "dialog", "embedding_cache", "file_store", "media",
+                     "memory", "tool_result", ".trash", "skills"}
     skip_names = {"agent.json", "skill.json", "chats.json", "jobs.json",
                   "chats.json.tmp", "config.json", "token_usage.json",
                   "copaw_file_metadata.json"}
